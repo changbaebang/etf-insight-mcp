@@ -319,3 +319,10 @@ func Symbols() []string {
 	}
 	return out
 }
+
+// CSV returns a copy of the embedded etfs.csv, comment lines included, so
+// the raw universe can be exposed (for example as an MCP resource)
+// without reaching into the package.
+func CSV() []byte {
+	return bytes.Clone(etfsCSV)
+}
