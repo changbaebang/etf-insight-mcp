@@ -1,0 +1,115 @@
+# Hand-curated list of large and widely held US-listed ETFs that form the server's universe.
+# It is NOT an exact AUM ranking and does not claim to be complete; funds were chosen for
+# recognisability and category coverage, and only when the name and issuer were certain.
+# Leveraged and inverse funds (leveraged=true) are included only so they can be analyzed.
+# Nothing in this file is a recommendation.
+# Columns: symbol,name,issuer,category,leveraged,note (note is at most 80 characters)
+symbol,name,issuer,category,leveraged,note
+VTI,Vanguard Total Stock Market ETF,Vanguard,US Broad Market,false,Tracks the CRSP US Total Market Index of nearly every US-listed stock
+ITOT,iShares Core S&P Total U.S. Stock Market ETF,iShares,US Broad Market,false,Tracks the S&P Total Market Index
+SCHB,Schwab U.S. Broad Market ETF,Schwab,US Broad Market,false,Tracks the Dow Jones U.S. Broad Stock Market Index
+DFAC,Dimensional U.S. Core Equity 2 ETF,Dimensional,US Broad Market,false,Active broad US equity fund tilted toward small and value stocks
+SPY,SPDR S&P 500 ETF Trust,State Street,US Large Cap,false,Tracks the S&P 500 and is the oldest and most traded US ETF
+IVV,iShares Core S&P 500 ETF,iShares,US Large Cap,false,Tracks the S&P 500 at a very low expense ratio
+VOO,Vanguard S&P 500 ETF,Vanguard,US Large Cap,false,Tracks the S&P 500 at a very low expense ratio
+SPLG,SPDR Portfolio S&P 500 ETF,State Street,US Large Cap,false,Tracks the S&P 500 with a low share price and expense ratio
+RSP,Invesco S&P 500 Equal Weight ETF,Invesco,US Large Cap,false,Holds every S&P 500 stock at equal weight rather than by market cap
+DIA,SPDR Dow Jones Industrial Average ETF Trust,State Street,US Large Cap,false,Tracks the 30-stock Dow Jones Industrial Average
+QQQ,Invesco QQQ Trust,Invesco,US Large Growth,false,Tracks the Nasdaq-100 of the largest non-financial Nasdaq stocks
+QQQM,Invesco NASDAQ 100 ETF,Invesco,US Large Growth,false,Tracks the Nasdaq-100 at a lower expense ratio than QQQ
+VUG,Vanguard Growth ETF,Vanguard,US Large Growth,false,Tracks the CRSP US Large Cap Growth Index
+IWF,iShares Russell 1000 Growth ETF,iShares,US Large Growth,false,Tracks the growth half of the Russell 1000
+SCHG,Schwab U.S. Large-Cap Growth ETF,Schwab,US Large Growth,false,Tracks the Dow Jones U.S. Large-Cap Growth Total Stock Market Index
+VTV,Vanguard Value ETF,Vanguard,US Large Value,false,Tracks the CRSP US Large Cap Value Index
+IWD,iShares Russell 1000 Value ETF,iShares,US Large Value,false,Tracks the value half of the Russell 1000
+SCHV,Schwab U.S. Large-Cap Value ETF,Schwab,US Large Value,false,Tracks the Dow Jones U.S. Large-Cap Value Total Stock Market Index
+IJH,iShares Core S&P Mid-Cap ETF,iShares,US Mid Cap,false,Tracks the S&P MidCap 400
+VO,Vanguard Mid-Cap ETF,Vanguard,US Mid Cap,false,Tracks the CRSP US Mid Cap Index
+MDY,SPDR S&P MidCap 400 ETF Trust,State Street,US Mid Cap,false,Tracks the S&P MidCap 400
+IWM,iShares Russell 2000 ETF,iShares,US Small Cap,false,Tracks the Russell 2000 small-cap index
+IJR,iShares Core S&P Small-Cap ETF,iShares,US Small Cap,false,Tracks the S&P SmallCap 600
+VB,Vanguard Small-Cap ETF,Vanguard,US Small Cap,false,Tracks the CRSP US Small Cap Index
+AVUV,Avantis U.S. Small Cap Value ETF,Avantis,US Small Cap,false,Active US small-cap value fund with a profitability screen
+SCHD,Schwab U.S. Dividend Equity ETF,Schwab,Dividend,false,Tracks the Dow Jones U.S. Dividend 100 Index of quality dividend payers
+VIG,Vanguard Dividend Appreciation ETF,Vanguard,Dividend,false,Holds US companies with at least ten years of dividend growth
+VYM,Vanguard High Dividend Yield ETF,Vanguard,Dividend,false,Holds US stocks with above-average dividend yields
+DGRO,iShares Core Dividend Growth ETF,iShares,Dividend,false,Holds US stocks with a history of sustained dividend growth
+DVY,iShares Select Dividend ETF,iShares,Dividend,false,Holds 100 high-yielding US stocks screened for dividend consistency
+NOBL,ProShares S&P 500 Dividend Aristocrats ETF,ProShares,Dividend,false,Holds S&P 500 stocks with 25+ years of consecutive dividend increases
+XLK,Technology Select Sector SPDR Fund,State Street,Sector,false,Holds the information technology stocks of the S&P 500
+XLF,Financial Select Sector SPDR Fund,State Street,Sector,false,Holds the financial stocks of the S&P 500
+XLV,Health Care Select Sector SPDR Fund,State Street,Sector,false,Holds the health care stocks of the S&P 500
+XLE,Energy Select Sector SPDR Fund,State Street,Sector,false,Holds the energy stocks of the S&P 500
+XLI,Industrial Select Sector SPDR Fund,State Street,Sector,false,Holds the industrial stocks of the S&P 500
+XLY,Consumer Discretionary Select Sector SPDR Fund,State Street,Sector,false,Holds the consumer discretionary stocks of the S&P 500
+XLP,Consumer Staples Select Sector SPDR Fund,State Street,Sector,false,Holds the consumer staples stocks of the S&P 500
+XLU,Utilities Select Sector SPDR Fund,State Street,Sector,false,Holds the utility stocks of the S&P 500
+XLC,Communication Services Select Sector SPDR Fund,State Street,Sector,false,Holds the communication services stocks of the S&P 500
+XLRE,Real Estate Select Sector SPDR Fund,State Street,Sector,false,Holds the real estate stocks of the S&P 500
+VNQ,Vanguard Real Estate ETF,Vanguard,Sector,false,Holds US real estate investment trusts across the market
+SMH,VanEck Semiconductor ETF,VanEck,Sector,false,Holds the 25 largest US-listed semiconductor companies
+SOXX,iShares Semiconductor ETF,iShares,Sector,false,Tracks a US-listed semiconductor index
+ARKK,ARK Innovation ETF,ARK,Thematic,false,Active fund of companies ARK sees as disruptive innovators
+ARKW,ARK Next Generation Internet ETF,ARK,Thematic,false,Active fund focused on internet and cloud businesses
+ICLN,iShares Global Clean Energy ETF,iShares,Thematic,false,Holds global clean energy producers and equipment makers
+CIBR,First Trust NASDAQ Cybersecurity ETF,First Trust,Thematic,false,Holds global cybersecurity companies
+QUAL,iShares MSCI USA Quality Factor ETF,iShares,Factor,false,Holds US large and mid caps screened for quality metrics
+USMV,iShares MSCI USA Min Vol Factor ETF,iShares,Factor,false,Holds US stocks weighted to minimize portfolio volatility
+MTUM,iShares MSCI USA Momentum Factor ETF,iShares,Factor,false,Holds US large and mid caps with strong recent price momentum
+COWZ,Pacer US Cash Cows 100 ETF,Pacer,Factor,false,Holds the 100 Russell 1000 stocks with the highest free cash flow yield
+SPLV,Invesco S&P 500 Low Volatility ETF,Invesco,Factor,false,Holds the 100 least volatile S&P 500 stocks
+VEA,Vanguard FTSE Developed Markets ETF,Vanguard,International Developed,false,Holds developed-market stocks outside the US
+VXUS,Vanguard Total International Stock ETF,Vanguard,International Developed,false,Holds all non-US stocks across developed and emerging markets
+IEFA,iShares Core MSCI EAFE ETF,iShares,International Developed,false,Holds developed-market stocks in Europe Australasia and the Far East
+EFA,iShares MSCI EAFE ETF,iShares,International Developed,false,Holds large and mid caps in developed markets outside North America
+SCHF,Schwab International Equity ETF,Schwab,International Developed,false,Holds large and mid caps in developed markets outside the US
+VWO,Vanguard FTSE Emerging Markets ETF,Vanguard,Emerging Markets,false,Holds emerging-market stocks across all market caps
+IEMG,iShares Core MSCI Emerging Markets ETF,iShares,Emerging Markets,false,Holds emerging-market stocks across large mid and small caps
+EEM,iShares MSCI Emerging Markets ETF,iShares,Emerging Markets,false,Holds emerging-market large and mid caps
+FXI,iShares China Large-Cap ETF,iShares,Emerging Markets,false,Holds the 50 largest Chinese stocks listed in Hong Kong
+INDA,iShares MSCI India ETF,iShares,Emerging Markets,false,Holds Indian large and mid caps
+VT,Vanguard Total World Stock ETF,Vanguard,Global,false,Holds stocks from every developed and emerging market including the US
+ACWI,iShares MSCI ACWI ETF,iShares,Global,false,Holds large and mid caps across developed and emerging markets
+TLT,iShares 20+ Year Treasury Bond ETF,iShares,US Treasury,false,Holds US Treasuries maturing in 20 years or more
+IEF,iShares 7-10 Year Treasury Bond ETF,iShares,US Treasury,false,Holds US Treasuries maturing in 7 to 10 years
+SHY,iShares 1-3 Year Treasury Bond ETF,iShares,US Treasury,false,Holds US Treasuries maturing in 1 to 3 years
+GOVT,iShares U.S. Treasury Bond ETF,iShares,US Treasury,false,Holds US Treasuries across the whole maturity range
+VGIT,Vanguard Intermediate-Term Treasury ETF,Vanguard,US Treasury,false,Holds US Treasuries maturing in 3 to 10 years
+VGSH,Vanguard Short-Term Treasury ETF,Vanguard,US Treasury,false,Holds US Treasuries maturing in 1 to 3 years
+BND,Vanguard Total Bond Market ETF,Vanguard,US Aggregate Bond,false,Tracks the broad US investment-grade bond market
+AGG,iShares Core U.S. Aggregate Bond ETF,iShares,US Aggregate Bond,false,Tracks the Bloomberg U.S. Aggregate Bond Index
+SCHZ,Schwab U.S. Aggregate Bond ETF,Schwab,US Aggregate Bond,false,Tracks the Bloomberg U.S. Aggregate Bond Index
+FBND,Fidelity Total Bond ETF,Fidelity,US Aggregate Bond,false,Active fund across the US investment-grade bond market
+LQD,iShares iBoxx $ Investment Grade Corporate Bond ETF,iShares,Corporate Bond,false,Holds US dollar investment-grade corporate bonds
+VCIT,Vanguard Intermediate-Term Corporate Bond ETF,Vanguard,Corporate Bond,false,Holds investment-grade corporate bonds maturing in 5 to 10 years
+VCSH,Vanguard Short-Term Corporate Bond ETF,Vanguard,Corporate Bond,false,Holds investment-grade corporate bonds maturing in 1 to 5 years
+HYG,iShares iBoxx $ High Yield Corporate Bond ETF,iShares,High Yield Bond,false,Holds US dollar high-yield corporate bonds
+JNK,SPDR Bloomberg High Yield Bond ETF,State Street,High Yield Bond,false,Holds US dollar high-yield corporate bonds
+USHY,iShares Broad USD High Yield Corporate Bond ETF,iShares,High Yield Bond,false,Holds a broad set of US dollar high-yield corporate bonds
+MUB,iShares National Muni Bond ETF,iShares,Municipal Bond,false,Holds investment-grade US municipal bonds exempt from federal tax
+VTEB,Vanguard Tax-Exempt Bond ETF,Vanguard,Municipal Bond,false,Holds investment-grade US municipal bonds exempt from federal tax
+BNDX,Vanguard Total International Bond ETF,Vanguard,International Bond,false,Holds non-US investment-grade bonds hedged to the US dollar
+EMB,iShares J.P. Morgan USD Emerging Markets Bond ETF,iShares,International Bond,false,Holds US dollar sovereign bonds from emerging markets
+IAGG,iShares Core International Aggregate Bond ETF,iShares,International Bond,false,Holds non-US investment-grade bonds hedged to the US dollar
+TIP,iShares TIPS Bond ETF,iShares,Inflation Protected,false,Holds US Treasury Inflation-Protected Securities of all maturities
+SCHP,Schwab U.S. TIPS ETF,Schwab,Inflation Protected,false,Holds US Treasury Inflation-Protected Securities of all maturities
+VTIP,Vanguard Short-Term Inflation-Protected Securities ETF,Vanguard,Inflation Protected,false,Holds US TIPS maturing in under 5 years
+BIL,SPDR Bloomberg 1-3 Month T-Bill ETF,State Street,Cash / Ultra Short,false,Holds US Treasury bills maturing in 1 to 3 months
+SGOV,iShares 0-3 Month Treasury Bond ETF,iShares,Cash / Ultra Short,false,Holds US Treasury bills maturing in 3 months or less
+JPST,JPMorgan Ultra-Short Income ETF,JPMorgan,Cash / Ultra Short,false,Active ultra-short bond fund of investment-grade debt
+USFR,WisdomTree Floating Rate Treasury Fund,WisdomTree,Cash / Ultra Short,false,Holds US Treasury floating rate notes
+GLD,SPDR Gold Shares,State Street,Commodity,false,Holds physical gold bullion
+IAU,iShares Gold Trust,iShares,Commodity,false,Holds physical gold bullion
+SLV,iShares Silver Trust,iShares,Commodity,false,Holds physical silver bullion
+PDBC,Invesco Optimum Yield Diversified Commodity Strategy No K-1 ETF,Invesco,Commodity,false,Active fund of futures on a diversified basket of commodities
+JEPI,JPMorgan Equity Premium Income ETF,JPMorgan,Covered Call,false,Holds low-volatility US stocks and sells index call options for income
+JEPQ,JPMorgan Nasdaq Equity Premium Income ETF,JPMorgan,Covered Call,false,Holds Nasdaq-100 stocks and sells index call options for income
+QYLD,Global X NASDAQ 100 Covered Call ETF,Global X,Covered Call,false,Holds the Nasdaq-100 and sells monthly at-the-money call options
+TQQQ,ProShares UltraPro QQQ,ProShares,Leveraged / Inverse,true,Seeks 3x the daily return of the Nasdaq-100
+SQQQ,ProShares UltraPro Short QQQ,ProShares,Leveraged / Inverse,true,Seeks -3x the daily return of the Nasdaq-100
+SOXL,Direxion Daily Semiconductor Bull 3X Shares,Direxion,Leveraged / Inverse,true,Seeks 3x the daily return of a US semiconductor index
+SOXS,Direxion Daily Semiconductor Bear 3X Shares,Direxion,Leveraged / Inverse,true,Seeks -3x the daily return of a US semiconductor index
+UPRO,ProShares UltraPro S&P500,ProShares,Leveraged / Inverse,true,Seeks 3x the daily return of the S&P 500
+SPXU,ProShares UltraPro Short S&P500,ProShares,Leveraged / Inverse,true,Seeks -3x the daily return of the S&P 500
+SSO,ProShares Ultra S&P500,ProShares,Leveraged / Inverse,true,Seeks 2x the daily return of the S&P 500
+TMF,Direxion Daily 20+ Year Treasury Bull 3X Shares,Direxion,Leveraged / Inverse,true,Seeks 3x the daily return of a 20+ year US Treasury index
