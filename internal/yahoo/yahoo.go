@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -181,10 +182,15 @@ func (c *Client) fetchOnce(ctx context.Context, symbol string) ([]byte, error) {
 }
 
 // chartURL builds the request URL for symbol: the whole daily history
-// with dividend events and adjusted closes.
+// with dividend events and adjusted closes. The span is given as an
+// explicit period1/period2 pair rather than range=max because, as of
+// October 2026, Yahoo answers range=max with monthly bars (meta
+// dataGranularity "1mo") no matter what interval says, while an explicit
+// period honours interval=1d.
 func (c *Client) chartURL(symbol string) string {
 	q := url.Values{}
-	q.Set("range", "max")
+	q.Set("period1", "0")
+	q.Set("period2", strconv.FormatInt(time.Now().Unix(), 10))
 	q.Set("interval", "1d")
 	q.Set("events", "div")
 	q.Set("includeAdjustedClose", "true")
