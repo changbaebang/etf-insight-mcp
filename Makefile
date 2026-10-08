@@ -1,10 +1,14 @@
 BINARY := etf-insight-mcp
 PKG    := ./cmd/$(BINARY)
 
-.PHONY: build run test lint vet tidy clean
+.PHONY: build install run test lint vet tidy clean
 
 build:
 	go build -o bin/$(BINARY) $(PKG)
+
+# Installs to $(go env GOPATH)/bin, usually ~/go/bin.
+install:
+	go install $(PKG)
 
 run: build
 	./bin/$(BINARY)

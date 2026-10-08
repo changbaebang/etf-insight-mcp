@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "etf-insight": {
+      "command": "./bin/etf-insight-mcp"
+    }
+  }
+}
