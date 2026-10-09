@@ -17,6 +17,11 @@
 //   - The trading calendar is the set of days on which every allocated
 //     symbol (and every Plan.CalendarSymbols symbol) has a bar, bounded
 //     for KRW plans by the exchange-rate history.
+//
+// Run is the engine. RunRolling slides a fixed-length window over the
+// history and runs the plan in each ("what if I had started in year X?");
+// RunLumpSumVsDCA runs the same money as one purchase and as a recurring
+// plan side by side.
 package sim
 
 import (
@@ -41,16 +46,20 @@ const (
 	Weekly Cadence = "weekly"
 	// Monthly contributes on the first trading day of each calendar month.
 	Monthly Cadence = "monthly"
+	// Once contributes a single time, on the first trading day of the
+	// range, and then only values the position. It turns Run into a
+	// lump-sum simulation; RunLumpSumVsDCA uses it for the lump-sum leg.
+	Once Cadence = "once"
 )
 
 // ParseCadence parses a cadence name, ignoring case and surrounding spaces.
 func ParseCadence(s string) (Cadence, error) {
 	c := Cadence(strings.ToLower(strings.TrimSpace(s)))
 	switch c {
-	case Daily, Weekly, Monthly:
+	case Daily, Weekly, Monthly, Once:
 		return c, nil
 	default:
-		return "", fmt.Errorf("sim: bad cadence %q (want daily, weekly or monthly)", s)
+		return "", fmt.Errorf("sim: bad cadence %q (want daily, weekly, monthly or once)", s)
 	}
 }
 
@@ -90,8 +99,9 @@ type Plan struct {
 	Currency string
 	// Cadence picks the contribution days on the trading calendar:
 	// Daily = every trading day, Weekly = the first trading day of each
-	// ISO week, Monthly = the first trading day of each calendar month.
-	// The first day of the calendar is always a contribution day.
+	// ISO week, Monthly = the first trading day of each calendar month,
+	// Once = the first day only. The first day of the calendar is always
+	// a contribution day.
 	Cadence Cadence
 	// Start and End are inclusive calendar dates; the clock and location
 	// are ignored (see market.Day). A zero Start means the first day every
@@ -138,6 +148,32 @@ type Input struct {
 // arguments and returns a descriptive error for any problem; it never
 // modifies its inputs.
 func Run(p Plan, in Input) (*Result, error) {
+	pr, err := prepare(p, in)
+	if err != nil {
+		return nil, err
+	}
+	res, err := newEngine(pr.plan, pr.cal, pr.fx).run()
+	if err != nil {
+		return nil, err
+	}
+	res.Notes = append(pr.notes, res.Notes...)
+	return res, nil
+}
+
+// prepared is everything an engine needs: the normalised plan, its trading
+// calendar, the currency converter and the notes buildCalendar produced
+// while fitting the requested range to the available history.
+type prepared struct {
+	plan  Plan
+	cal   *calendar
+	fx    *converter
+	notes []string
+}
+
+// prepare validates p against in and builds its calendar without running
+// anything. Run, RunRolling and RunLumpSumVsDCA all start here, so a plan
+// that is valid for one is valid for the others.
+func prepare(p Plan, in Input) (*prepared, error) {
 	p, err := normalise(p)
 	if err != nil {
 		return nil, err
@@ -158,12 +194,7 @@ func Run(p Plan, in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := newEngine(p, cal, fx).run()
-	if err != nil {
-		return nil, err
-	}
-	res.Notes = append(notes, res.Notes...)
-	return res, nil
+	return &prepared{plan: p, cal: cal, fx: fx, notes: notes}, nil
 }
 
 // normalise validates p and returns a copy with trimmed upper-case symbols

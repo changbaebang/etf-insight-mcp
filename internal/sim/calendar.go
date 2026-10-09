@@ -180,8 +180,9 @@ func symbolList(series []named) string {
 
 // contributionDays flags the days of the calendar on which a contribution
 // is made under cadence c: every day for Daily, the first day of each ISO
-// week for Weekly and the first day of each calendar month for Monthly.
-// The first day of the calendar always contributes.
+// week for Weekly, the first day of each calendar month for Monthly and
+// only the first day for Once. The first day of the calendar always
+// contributes.
 func contributionDays(c Cadence, days []time.Time) []bool {
 	out := make([]bool, len(days))
 	for k, d := range days {
@@ -191,9 +192,12 @@ func contributionDays(c Cadence, days []time.Time) []bool {
 }
 
 // startsNewPeriod reports whether cur falls in a later contribution period
-// than prev, the trading day before it.
+// than prev, the trading day before it. Once has a single period, so it
+// never starts a new one.
 func startsNewPeriod(c Cadence, prev, cur time.Time) bool {
 	switch c {
+	case Once:
+		return false
 	case Weekly:
 		py, pw := prev.ISOWeek()
 		cy, cw := cur.ISOWeek()
@@ -212,7 +216,7 @@ func startsNewPeriod(c Cadence, prev, cur time.Time) bool {
 // begins on the start day itself the calendar date is used instead (a
 // Monday or the first weekday of the month counts as a period start).
 func midPeriodStartNote(c Cadence, base *market.Series, start time.Time) (string, bool) {
-	if c == Daily {
+	if c == Daily || c == Once {
 		return "", false
 	}
 	mid := false
