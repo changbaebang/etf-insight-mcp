@@ -404,8 +404,118 @@ func TestStoreWriteFailureStillReturnsSeries(t *testing.T) {
 		t.Fatalf("Series: %v", err)
 	}
 	assertSeries(t, got, "SPY")
-	if s.LastError("SPY") == nil {
-		t.Error("LastError = nil, want the write failure")
+	if s.LastError("SPY") != nil {
+		t.Errorf("LastError = %v, want nil: the fetch itself succeeded", s.LastError("SPY"))
+	}
+	if s.LastWriteError("SPY") == nil {
+		t.Error("LastWriteError = nil, want the write failure")
+	}
+}
+
+// TestStoreLeaderCancelDoesNotFailWaiters: the caller that started a fetch
+// gives up, but another caller waiting on the same symbol still gets the
+// series from the single upstream call.
+func TestStoreLeaderCancelDoesNotFailWaiters(t *testing.T) {
+	s, f := newStore(t, time.Hour)
+	f.gate = make(chan struct{})
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := s.Series(leaderCtx, "SLOW")
+		leaderDone <- err
+	}()
+	waitFor(t, "the leader to reach the source", func() bool { return f.count() == 1 })
+
+	waiterDone := make(chan error, 1)
+	var waiterSeries *market.Series
+	go func() {
+		got, err := s.Series(context.Background(), "SLOW")
+		waiterSeries = got
+		waiterDone <- err
+	}()
+	// Give the waiter time to register, then cancel only the leader.
+	time.Sleep(20 * time.Millisecond)
+	cancelLeader()
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader error = %v, want context.Canceled", err)
+	}
+
+	close(f.gate)
+	if err := <-waiterDone; err != nil {
+		t.Fatalf("waiter error = %v, want nil: the fetch must outlive the leader", err)
+	}
+	assertSeries(t, waiterSeries, "SLOW")
+	if f.count() != 1 {
+		t.Errorf("calls = %d, want 1", f.count())
+	}
+	if err := s.LastError("SLOW"); err != nil {
+		t.Errorf("LastError = %v, want nil after a successful shared fetch", err)
+	}
+}
+
+func TestStorePrefetchReturnsSeries(t *testing.T) {
+	s, f := newStore(t, time.Hour)
+	f.failFor = map[string]error{"BAD": errUpstream}
+
+	series, errs := s.Prefetch(context.Background(), []string{"SPY", "QQQ", "BAD"}, 2)
+	if len(series) != 2 || series["SPY"] == nil || series["QQQ"] == nil {
+		t.Fatalf("series = %v, want SPY and QQQ", series)
+	}
+	if len(errs) != 1 || !errors.Is(errs["BAD"], errUpstream) {
+		t.Fatalf("errs = %v, want BAD -> upstream error", errs)
+	}
+	if f.count() != 3 {
+		t.Errorf("calls = %d, want 3", f.count())
+	}
+	// A second prefetch is served from disk.
+	s.Prefetch(context.Background(), []string{"SPY", "QQQ"}, 2)
+	if f.count() != 3 {
+		t.Errorf("calls after warm prefetch = %d, want 3", f.count())
+	}
+}
+
+func TestStoreFutureFetchTimeIsStale(t *testing.T) {
+	s, f := newStore(t, time.Hour)
+	// Write a file stamped far in the future, then move the clock back.
+	s.now = func() time.Time { return t0.AddDate(100, 0, 0) }
+	if _, err := s.Series(context.Background(), "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	s.now = func() time.Time { return t0 }
+	if _, err := s.Series(context.Background(), "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	if f.count() != 2 {
+		t.Errorf("calls = %d, want 2: a future FetchedAt must not count as fresh", f.count())
+	}
+}
+
+func TestNewSweepsOldTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "SPY.123.tmp")
+	fresh := filepath.Join(dir, "QQQ.456.tmp")
+	keep := filepath.Join(dir, "SPY.json")
+	for _, p := range []string{old, fresh, keep} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	New(&fakeSource{}, dir, time.Hour)
+
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("old temp file still exists (err=%v)", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("fresh temp file was removed: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("cache file was removed: %v", err)
 	}
 }
 
