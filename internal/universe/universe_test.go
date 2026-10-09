@@ -23,6 +23,7 @@ var allowedCategories = []string{
 	"Thematic",
 	"Factor",
 	"International Developed",
+	"International ex-US",
 	"Emerging Markets",
 	"Global",
 	"US Treasury",
@@ -49,7 +50,7 @@ VOO,Vanguard S&P 500 ETF,Vanguard,US Large Cap,false,Tracks the S&P 500
 `
 
 func TestAllRowCountInRange(t *testing.T) {
-	const minRows, maxRows = 95, 110
+	const minRows, maxRows = 95, 140
 	if n := len(All()); n < minRows || n > maxRows {
 		t.Fatalf("len(All()) = %d, want between %d and %d", n, minRows, maxRows)
 	}
@@ -164,7 +165,7 @@ func TestContainsWellKnownSymbols(t *testing.T) {
 		"BND", "AGG", "BNDX", "TLT", "IEF", "SHY", "LQD", "HYG", "TIP", "MUB", "BIL", "SGOV",
 		"GLD", "IAU", "SLV",
 		"XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLC", "XLRE", "SMH", "SOXX", "VNQ",
-		"RSP", "SPLG", "QUAL", "USMV", "MTUM", "COWZ", "ARKK", "TQQQ", "SQQQ", "SOXL", "UPRO",
+		"RSP", "SPYM", "QUAL", "USMV", "MTUM", "COWZ", "ARKK", "TQQQ", "SQQQ", "SOXL", "UPRO",
 	}
 	for _, s := range wellKnown {
 		if _, ok := Get(s); !ok {
@@ -316,8 +317,8 @@ func TestFilter(t *testing.T) {
 		{
 			name:      "category and issuer combined",
 			q:         Query{Category: "US Large Cap", Issuer: "Vanguard"},
-			wantLen:   1,
-			wantExact: []string{"VOO"},
+			wantLen:   2,
+			wantExact: []string{"VOO", "VV"},
 		},
 		{
 			name:      "all three fields combined",

@@ -79,6 +79,7 @@ var knownCategories = map[string]bool{
 	"Thematic":                true,
 	"Factor":                  true,
 	"International Developed": true,
+	"International ex-US":     true,
 	"Emerging Markets":        true,
 	"Global":                  true,
 	"US Treasury":             true,

@@ -5,30 +5,40 @@
 # Nothing in this file is a recommendation.
 # Columns: symbol,name,issuer,category,leveraged,note (note is at most 80 characters)
 symbol,name,issuer,category,leveraged,note
-VTI,Vanguard Total Stock Market ETF,Vanguard,US Broad Market,false,Tracks the CRSP US Total Market Index of nearly every US-listed stock
+VTI,Vanguard Morningstar Total Stock Market ETF,Vanguard,US Broad Market,false,Tracks the Morningstar US Total Market Index of nearly every US-listed stock
+VXF,Vanguard Extended Market ETF,Vanguard,US Broad Market,false,Holds US mid- and small-cap stocks outside the S&P 500
 ITOT,iShares Core S&P Total U.S. Stock Market ETF,iShares,US Broad Market,false,Tracks the S&P Total Market Index
 SCHB,Schwab U.S. Broad Market ETF,Schwab,US Broad Market,false,Tracks the Dow Jones U.S. Broad Stock Market Index
 DFAC,Dimensional U.S. Core Equity 2 ETF,Dimensional,US Broad Market,false,Active broad US equity fund tilted toward small and value stocks
 SPY,SPDR S&P 500 ETF Trust,State Street,US Large Cap,false,Tracks the S&P 500 and is the oldest and most traded US ETF
 IVV,iShares Core S&P 500 ETF,iShares,US Large Cap,false,Tracks the S&P 500 at a very low expense ratio
 VOO,Vanguard S&P 500 ETF,Vanguard,US Large Cap,false,Tracks the S&P 500 at a very low expense ratio
-SPLG,SPDR Portfolio S&P 500 ETF,State Street,US Large Cap,false,Tracks the S&P 500 with a low share price and expense ratio
+SPYM,SPDR Portfolio S&P 500 ETF,State Street,US Large Cap,false,Tracks the S&P 500 with a low share price and expense ratio
+VV,Vanguard Morningstar Large-Cap ETF,Vanguard,US Large Cap,false,Tracks the Morningstar US Large Cap Index
+SCHX,Schwab U.S. Large-Cap ETF,Schwab,US Large Cap,false,Tracks the Dow Jones U.S. Large-Cap Total Stock Market Index
+IWB,iShares Russell 1000 ETF,iShares,US Large Cap,false,Tracks the Russell 1000 Index of large US stocks
 RSP,Invesco S&P 500 Equal Weight ETF,Invesco,US Large Cap,false,Holds every S&P 500 stock at equal weight rather than by market cap
 DIA,SPDR Dow Jones Industrial Average ETF Trust,State Street,US Large Cap,false,Tracks the 30-stock Dow Jones Industrial Average
 QQQ,Invesco QQQ Trust,Invesco,US Large Growth,false,Tracks the Nasdaq-100 of the largest non-financial Nasdaq stocks
 QQQM,Invesco NASDAQ 100 ETF,Invesco,US Large Growth,false,Tracks the Nasdaq-100 at a lower expense ratio than QQQ
-VUG,Vanguard Growth ETF,Vanguard,US Large Growth,false,Tracks the CRSP US Large Cap Growth Index
+VUG,Vanguard Morningstar Growth ETF,Vanguard,US Large Growth,false,Tracks the Morningstar US Large Cap Growth Index
+IVW,iShares S&P 500 Growth ETF,iShares,US Large Growth,false,Tracks the S&P 500 Growth Index
+SPYG,SPDR Portfolio S&P 500 Growth ETF,State Street,US Large Growth,false,Tracks the S&P 500 Growth Index at a low expense ratio
 IWF,iShares Russell 1000 Growth ETF,iShares,US Large Growth,false,Tracks the growth half of the Russell 1000
 SCHG,Schwab U.S. Large-Cap Growth ETF,Schwab,US Large Growth,false,Tracks the Dow Jones U.S. Large-Cap Growth Total Stock Market Index
-VTV,Vanguard Value ETF,Vanguard,US Large Value,false,Tracks the CRSP US Large Cap Value Index
+VTV,Vanguard Morningstar Value ETF,Vanguard,US Large Value,false,Tracks the Morningstar US Large Cap Value Index
+IVE,iShares S&P 500 Value ETF,iShares,US Large Value,false,Tracks the S&P 500 Value Index
+SPYV,SPDR Portfolio S&P 500 Value ETF,State Street,US Large Value,false,Tracks the S&P 500 Value Index at a low expense ratio
 IWD,iShares Russell 1000 Value ETF,iShares,US Large Value,false,Tracks the value half of the Russell 1000
 SCHV,Schwab U.S. Large-Cap Value ETF,Schwab,US Large Value,false,Tracks the Dow Jones U.S. Large-Cap Value Total Stock Market Index
 IJH,iShares Core S&P Mid-Cap ETF,iShares,US Mid Cap,false,Tracks the S&P MidCap 400
-VO,Vanguard Mid-Cap ETF,Vanguard,US Mid Cap,false,Tracks the CRSP US Mid Cap Index
+VO,Vanguard Morningstar Mid-Cap ETF,Vanguard,US Mid Cap,false,Tracks the Morningstar US Mid Cap Index
+IWR,iShares Russell Mid-Cap ETF,iShares,US Mid Cap,false,Tracks the Russell Midcap Index
 MDY,SPDR S&P MidCap 400 ETF Trust,State Street,US Mid Cap,false,Tracks the S&P MidCap 400
 IWM,iShares Russell 2000 ETF,iShares,US Small Cap,false,Tracks the Russell 2000 small-cap index
 IJR,iShares Core S&P Small-Cap ETF,iShares,US Small Cap,false,Tracks the S&P SmallCap 600
-VB,Vanguard Small-Cap ETF,Vanguard,US Small Cap,false,Tracks the CRSP US Small Cap Index
+VB,Vanguard Morningstar Small-Cap ETF,Vanguard,US Small Cap,false,Tracks the Morningstar US Small Cap Index
+VBR,Vanguard Morningstar Small-Cap Value ETF,Vanguard,US Small Cap,false,Tracks the Morningstar US Small Cap Value Index
 AVUV,Avantis U.S. Small Cap Value ETF,Avantis,US Small Cap,false,Active US small-cap value fund with a profitability screen
 SCHD,Schwab U.S. Dividend Equity ETF,Schwab,Dividend,false,Tracks the Dow Jones U.S. Dividend 100 Index of quality dividend payers
 VIG,Vanguard Dividend Appreciation ETF,Vanguard,Dividend,false,Holds US companies with at least ten years of dividend growth
@@ -46,11 +56,13 @@ XLP,Consumer Staples Select Sector SPDR Fund,State Street,Sector,false,Holds the
 XLU,Utilities Select Sector SPDR Fund,State Street,Sector,false,Holds the utility stocks of the S&P 500
 XLC,Communication Services Select Sector SPDR Fund,State Street,Sector,false,Holds the communication services stocks of the S&P 500
 XLRE,Real Estate Select Sector SPDR Fund,State Street,Sector,false,Holds the real estate stocks of the S&P 500
+XLB,Materials Select Sector SPDR Fund,State Street,Sector,false,Holds the materials stocks of the S&P 500
+VGT,Vanguard Information Technology ETF,Vanguard,Sector,false,Holds US information technology stocks across all market caps
 VNQ,Vanguard Real Estate ETF,Vanguard,Sector,false,Holds US real estate investment trusts across the market
 SMH,VanEck Semiconductor ETF,VanEck,Sector,false,Holds the 25 largest US-listed semiconductor companies
 SOXX,iShares Semiconductor ETF,iShares,Sector,false,Tracks a US-listed semiconductor index
 ARKK,ARK Innovation ETF,ARK,Thematic,false,Active fund of companies ARK sees as disruptive innovators
-ARKW,ARK Next Generation Internet ETF,ARK,Thematic,false,Active fund focused on internet and cloud businesses
+ARKW,ARK Next Generation Technology ETF,ARK,Thematic,false,Active fund of next-generation internet and technology companies
 ICLN,iShares Global Clean Energy ETF,iShares,Thematic,false,Holds global clean energy producers and equipment makers
 CIBR,First Trust NASDAQ Cybersecurity ETF,First Trust,Thematic,false,Holds global cybersecurity companies
 QUAL,iShares MSCI USA Quality Factor ETF,iShares,Factor,false,Holds US large and mid caps screened for quality metrics
@@ -59,7 +71,9 @@ MTUM,iShares MSCI USA Momentum Factor ETF,iShares,Factor,false,Holds US large an
 COWZ,Pacer US Cash Cows 100 ETF,Pacer,Factor,false,Holds the 100 Russell 1000 stocks with the highest free cash flow yield
 SPLV,Invesco S&P 500 Low Volatility ETF,Invesco,Factor,false,Holds the 100 least volatile S&P 500 stocks
 VEA,Vanguard FTSE Developed Markets ETF,Vanguard,International Developed,false,Holds developed-market stocks outside the US
-VXUS,Vanguard Total International Stock ETF,Vanguard,International Developed,false,Holds all non-US stocks across developed and emerging markets
+VXUS,Vanguard Total International Stock ETF,Vanguard,International ex-US,false,Holds all non-US stocks across developed and emerging markets
+IXUS,iShares Core MSCI Total International Stock ETF,iShares,International ex-US,false,Holds developed and emerging market stocks outside the US
+SPDW,SPDR Portfolio Developed World ex-US ETF,State Street,International Developed,false,Developed-market stocks outside the US at a low expense ratio
 IEFA,iShares Core MSCI EAFE ETF,iShares,International Developed,false,Holds developed-market stocks in Europe Australasia and the Far East
 EFA,iShares MSCI EAFE ETF,iShares,International Developed,false,Holds large and mid caps in developed markets outside North America
 SCHF,Schwab International Equity ETF,Schwab,International Developed,false,Holds large and mid caps in developed markets outside the US
@@ -79,7 +93,10 @@ VGSH,Vanguard Short-Term Treasury ETF,Vanguard,US Treasury,false,Holds US Treasu
 BND,Vanguard Total Bond Market ETF,Vanguard,US Aggregate Bond,false,Tracks the broad US investment-grade bond market
 AGG,iShares Core U.S. Aggregate Bond ETF,iShares,US Aggregate Bond,false,Tracks the Bloomberg U.S. Aggregate Bond Index
 SCHZ,Schwab U.S. Aggregate Bond ETF,Schwab,US Aggregate Bond,false,Tracks the Bloomberg U.S. Aggregate Bond Index
-FBND,Fidelity Total Bond ETF,Fidelity,US Aggregate Bond,false,Active fund across the US investment-grade bond market
+FBND,Fidelity Total Bond ETF,Fidelity,US Aggregate Bond,false,Active core-plus bond fund; up to 20% in high-yield and emerging-market debt
+BSV,Vanguard Short-Term Bond ETF,Vanguard,US Aggregate Bond,false,Short-term US government and investment-grade corporate bonds (1-5 years)
+BIV,Vanguard Intermediate-Term Bond ETF,Vanguard,US Aggregate Bond,false,Intermediate-term US government and investment-grade corporate bonds
+IUSB,iShares Core Universal USD Bond ETF,iShares,US Aggregate Bond,false,Tracks the Bloomberg US Universal Index; includes some high-yield bonds
 LQD,iShares iBoxx $ Investment Grade Corporate Bond ETF,iShares,Corporate Bond,false,Holds US dollar investment-grade corporate bonds
 VCIT,Vanguard Intermediate-Term Corporate Bond ETF,Vanguard,Corporate Bond,false,Holds investment-grade corporate bonds maturing in 5 to 10 years
 VCSH,Vanguard Short-Term Corporate Bond ETF,Vanguard,Corporate Bond,false,Holds investment-grade corporate bonds maturing in 1 to 5 years
