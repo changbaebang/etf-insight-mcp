@@ -20,6 +20,11 @@ var ErrNotFound = errors.New("market: symbol not found")
 type Bar struct {
 	// Date is the exchange-local trading date, normalised to UTC midnight.
 	Date time.Time
+	// Open, High and Low are the day's prices in the series currency; 0
+	// when the provider did not report them (older cache files).
+	Open, High, Low float64
+	// Volume is the number of shares traded; 0 when not reported.
+	Volume int64
 	// Close is the raw closing price in the series currency.
 	Close float64
 	// AdjClose is the dividend- and split-adjusted close. Buying and valuing
@@ -51,6 +56,9 @@ type Meta struct {
 type Series struct {
 	Meta Meta
 	Bars []Bar
+	// Splits lists share splits in ascending date order; nil when none are
+	// known. Prices are already split-adjusted.
+	Splits []Split
 }
 
 // Validate checks the Series invariants.

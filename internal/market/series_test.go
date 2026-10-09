@@ -98,3 +98,20 @@ func TestErrNotFoundWraps(t *testing.T) {
 }
 
 func errorsJoin(err error) error { return errors.Join(errors.New("ctx"), err) }
+
+func TestSplitRatio(t *testing.T) {
+	tests := []struct {
+		s    Split
+		want string
+	}{
+		{Split{Numerator: 2, Denominator: 1}, "2:1"},
+		{Split{Numerator: 1, Denominator: 10}, "1:10"},
+		{Split{Numerator: 3, Denominator: 2}, "3:2"},
+		{Split{Numerator: 1.5, Denominator: 1}, "1.5:1"},
+	}
+	for _, tt := range tests {
+		if got := tt.s.Ratio(); got != tt.want {
+			t.Errorf("Ratio() = %q, want %q", got, tt.want)
+		}
+	}
+}
