@@ -149,7 +149,7 @@ func TestForecastDCA(t *testing.T) {
 		{name: "long horizon", args: map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 50}, want: "at most 40"},
 		{name: "too many simulations", args: map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "simulations": 30000}, want: "exceeds the maximum"},
 		{name: "negative simulations", args: map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "simulations": -1}, want: "simulations must be positive"},
-		{name: "block longer than history", args: map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "block_length": 5000}, want: "insufficient history"},
+		{name: "block longer than history", args: map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "block_length": 1000}, want: "insufficient history"},
 		{name: "bad cadence", args: map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "cadence": "yearly"}, want: "use daily, weekly or monthly"},
 		{name: "zero amount", args: map[string]any{"symbol": "VOO", "amount": 0, "horizon_years": 1}, want: "amount must be > 0"},
 		{name: "impossible expected return", args: map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "expected_annual_return_pct": -100}, want: "greater than -100"},

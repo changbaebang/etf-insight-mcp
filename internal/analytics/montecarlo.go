@@ -18,29 +18,51 @@ import (
 // package deliberately does not import sim.
 type Cadence string
 
-// Supported cadences. Each one is approximated by a fixed number of
-// simulated trading days between contributions, see Cadence.interval.
+// Supported cadences. Each one is approximated by a fixed, possibly
+// fractional, number of simulated trading days between contributions, see
+// Cadence.period.
 const (
 	CadenceDaily   Cadence = "daily"
 	CadenceWeekly  Cadence = "weekly"
 	CadenceMonthly Cadence = "monthly"
 )
 
-// interval returns the number of simulated trading days between two
-// contributions: 1 (daily), 5 (weekly, one trading week) or 21 (monthly,
-// the average number of trading days in a month). Calendar effects such
-// as holidays and month lengths are ignored.
-func (c Cadence) interval() (int, error) {
+// period returns the number of simulated trading days between two
+// contributions: 1 (daily), 252/52 ≈ 4.85 (weekly, so a simulated year
+// holds 52 contributions like a calendar year) or 21 (monthly, 252/12).
+// A contribution happens on step t whenever floor(t/period) advances, see
+// contributesAt. Calendar effects such as holidays are ignored.
+func (c Cadence) period() (float64, error) {
 	switch c {
 	case CadenceDaily:
 		return 1, nil
 	case CadenceWeekly:
-		return 5, nil
+		return tradingDaysPerYear / 52.0, nil
 	case CadenceMonthly:
-		return 21, nil
+		return tradingDaysPerYear / 12.0, nil
 	default:
 		return 0, fmt.Errorf("%w: unknown cadence %q", ErrInvalidInput, string(c))
 	}
+}
+
+// contributesAt reports whether step t (0-based) is a contribution step
+// for the given period: step 0 always is, and so is every step on which
+// floor(t/period) is larger than it was on the previous step.
+func contributesAt(t int, period float64) bool {
+	if t == 0 {
+		return true
+	}
+	return math.Floor(float64(t)/period) > math.Floor(float64(t-1)/period)
+}
+
+// contributionCount is the number of contribution steps in steps steps:
+// one per distinct value of floor(t/period) for t in [0, steps), computed
+// with the same expression as contributesAt so the two always agree.
+func contributionCount(steps int, period float64) int {
+	if steps <= 0 {
+		return 0
+	}
+	return int(math.Floor(float64(steps-1)/period)) + 1
 }
 
 // Monte Carlo defaults and limits.
@@ -57,6 +79,11 @@ const (
 	DefaultSeed uint64 = 42
 	// MaxHorizonYears caps MCPlan.HorizonYears.
 	MaxHorizonYears = 40
+	// MaxLookbackYears caps MCConfig.LookbackYears; larger values would
+	// only overflow the date arithmetic.
+	MaxLookbackYears = 200
+	// MaxBlockLength caps MCConfig.BlockLength (ten trading years).
+	MaxBlockLength = 2520
 	// weightTolerance is how far the weight sum may stray from 1.
 	weightTolerance = 1e-6
 )
@@ -167,7 +194,7 @@ type MCResult struct {
 // uniformly random start (wrapping around the end of the lookback) until
 // it has one day per step, and applies that same day sequence to every
 // symbol and to FX, so cross-asset correlation is preserved. On the first
-// step and then every interval of the cadence, the contribution net of
+// step and then once per cadence period (see Cadence.period), the contribution net of
 // FeeRate is split by weight and buys fractional shares at the simulated
 // price, each symbol starting at its last real AdjClose; a KRW
 // contribution is first converted at the simulated FX rate. The final
@@ -203,7 +230,7 @@ type planSpec struct {
 	currency      string
 	krw           bool
 	cadence       Cadence
-	interval      int
+	period        float64
 	steps         int
 	contributions int
 	horizonYears  float64
@@ -229,7 +256,7 @@ func normalizePlan(p MCPlan) (planSpec, error) {
 	if currency != CurrencyUSD && currency != CurrencyKRW {
 		return planSpec{}, fmt.Errorf("%w: currency must be USD or KRW, got %q", ErrInvalidInput, p.Currency)
 	}
-	interval, err := p.Cadence.interval()
+	period, err := p.Cadence.period()
 	if err != nil {
 		return planSpec{}, err
 	}
@@ -251,9 +278,9 @@ func normalizePlan(p MCPlan) (planSpec, error) {
 		currency:      currency,
 		krw:           currency == CurrencyKRW,
 		cadence:       p.Cadence,
-		interval:      interval,
+		period:        period,
 		steps:         steps,
-		contributions: (steps + interval - 1) / interval,
+		contributions: contributionCount(steps, period),
 		horizonYears:  p.HorizonYears,
 		feeRate:       p.FeeRate,
 	}, nil
@@ -300,9 +327,11 @@ func normalizeConfig(cfg MCConfig) (MCConfig, error) {
 		cfg.BlockLength = DefaultBlockLength
 	case cfg.BlockLength < 0:
 		return cfg, fmt.Errorf("%w: block length must be positive, got %d", ErrInvalidInput, cfg.BlockLength)
+	case cfg.BlockLength > MaxBlockLength:
+		return cfg, fmt.Errorf("%w: block length %d exceeds the maximum %d", ErrInvalidInput, cfg.BlockLength, MaxBlockLength)
 	}
-	if !(cfg.LookbackYears >= 0) || math.IsInf(cfg.LookbackYears, 0) {
-		return cfg, fmt.Errorf("%w: lookback years must be >= 0, got %v", ErrInvalidInput, cfg.LookbackYears)
+	if !(cfg.LookbackYears >= 0) || cfg.LookbackYears > MaxLookbackYears {
+		return cfg, fmt.Errorf("%w: lookback years must be in [0, %d], got %v", ErrInvalidInput, MaxLookbackYears, cfg.LookbackYears)
 	}
 	if cfg.Seed == 0 {
 		cfg.Seed = DefaultSeed
@@ -328,9 +357,13 @@ type history struct {
 	// shift is added to every symbol's daily log return (0 without the
 	// expected-return override).
 	shift float64
-	// meanDaily and stdevDaily describe the weighted portfolio's daily log
-	// returns before the shift.
+	// meanDaily and stdevDaily describe the plan's daily log return in the
+	// plan currency before the shift: the daily-rebalanced basket
+	// log(Σ wᵢ·exp(rᵢ)) plus, for KRW plans, the FX log return.
 	meanDaily, stdevDaily float64
+	// meanDailyUSD is the basket's mean daily log return without the FX
+	// leg; the override shift is defined against it.
+	meanDailyUSD float64
 }
 
 // buildHistory aligns the input series on their common dates, cuts them to
@@ -362,7 +395,7 @@ func buildHistory(plan planSpec, cfg MCConfig, in MCInput) (*history, error) {
 		cutoff := dates[len(dates)-1].AddDate(0, 0, -int(math.Round(cfg.LookbackYears*daysPerYear)))
 		dates = dates[sort.Search(len(dates), func(i int) bool { return !dates[i].Before(cutoff) }):]
 	}
-	if len(dates) < cfg.BlockLength+1 {
+	if cfg.BlockLength > len(dates)-1 {
 		return nil, fmt.Errorf("%w: %d common trading days, need at least %d (block length + 1)",
 			ErrInsufficientHistory, len(dates), cfg.BlockLength+1)
 	}
@@ -385,16 +418,30 @@ func buildHistory(plan planSpec, cfg MCConfig, in MCInput) (*history, error) {
 		h.startFX = last.Close
 	}
 
+	// The basket's daily log return is log(Σ wᵢ·exp(rᵢ)): what a portfolio
+	// rebalanced to the weights every day actually earns. The weighted sum
+	// Σ wᵢ·rᵢ of log returns understates it by about half the
+	// diversification variance, which would bias the historical figures
+	// and the override. Because log(Σ wᵢ·exp(rᵢ+s)) = s + log(Σ wᵢ·exp(rᵢ)),
+	// one additive shift s moves the basket's mean exactly.
+	basket := make([]float64, len(dates)-1)
 	portfolio := make([]float64, len(dates)-1)
-	for d := range portfolio {
+	for d := range basket {
+		var growth float64
 		for i, w := range plan.weights {
-			portfolio[d] += w * h.returns[i][d]
+			growth += w * math.Exp(h.returns[i][d])
+		}
+		basket[d] = math.Log(growth)
+		portfolio[d] = basket[d]
+		if h.fxReturns != nil {
+			portfolio[d] += h.fxReturns[d]
 		}
 	}
+	h.meanDailyUSD = mean(basket)
 	h.meanDaily = mean(portfolio)
 	h.stdevDaily = sampleStdev(portfolio)
 	if cfg.ExpectedAnnualReturn != nil {
-		h.shift = (*cfg.ExpectedAnnualReturn - tradingDaysPerYear*h.meanDaily) / tradingDaysPerYear
+		h.shift = (*cfg.ExpectedAnnualReturn - tradingDaysPerYear*h.meanDailyUSD) / tradingDaysPerYear
 	}
 	return h, nil
 }
@@ -493,7 +540,7 @@ func (r *pathRunner) run(seed, index uint64) float64 {
 
 	blockStart, blockPos := 0, r.block // forces a draw on the first step
 	for t := range r.plan.steps {
-		if t%r.plan.interval == 0 {
+		if contributesAt(t, r.plan.period) {
 			r.contribute(fx)
 		}
 		if blockPos == r.block {
@@ -597,17 +644,28 @@ func assumptions(plan planSpec, cfg MCConfig, h *history) []string {
 		fmt.Sprintf("Daily log returns of each symbol's adjusted close from %s to %s (%d trading days) are resampled with a circular block bootstrap: blocks of %d consecutive days with random starts, wrapping at the end; %d paths, seed %d.",
 			h.from.Format(market.DateLayout), h.to.Format(market.DateLayout), days, cfg.BlockLength, cfg.Simulations, cfg.Seed),
 		"The same day sequence drives every symbol (and the FX rate), so historical cross-asset correlation and volatility clustering are kept; nothing that did not happen in the lookback can happen in a path.",
-		fmt.Sprintf("Horizon %.2f years = %d trading days at 252 per year; %s contributions are approximated as every %d trading days, placed at the start of the period, %d in total, the first one today at the last adjusted close.",
-			plan.horizonYears, plan.steps, plan.cadence, plan.interval, plan.contributions),
+		fmt.Sprintf("Horizon %.2f years = %d trading days at 252 per year; %s contributions are approximated as one every %.3g trading days (holidays and month lengths ignored), placed at the start of the period, %d in total, the first one today at the last adjusted close.",
+			plan.horizonYears, plan.steps, plan.cadence, plan.period, plan.contributions),
 		fmt.Sprintf("Each contribution of %.2f %s loses %.2f%% to fees, is split by weight and buys fractional shares; dividends are reinvested through the adjusted close; no taxes, spreads or rebalancing.",
 			plan.amount, plan.currency, plan.feeRate*100),
 	}
+	out = append(out, fmt.Sprintf("Historical return and volatility describe the plan's daily log return in %s: the daily-rebalanced basket log(sum of weight × exp(return))%s.",
+		plan.currency, fxStatsNote(plan.krw)))
 	if plan.krw {
 		out = append(out, "KRW contributions are converted to USD at that day's simulated rate (KRW per USD) and the final USD value is converted back at the final simulated rate; the FX path is resampled jointly from the FX series' closes and is not shifted by the expected-return override.")
 	}
 	if cfg.ExpectedAnnualReturn != nil {
-		out = append(out, fmt.Sprintf("Expected annual return override: every resampled daily log return is shifted by %+.6f so the weighted portfolio's mean annual log return is %.2f%% instead of the historical %.2f%%.",
-			h.shift, *cfg.ExpectedAnnualReturn*100, tradingDaysPerYear*h.meanDaily*100))
+		out = append(out, fmt.Sprintf("Expected annual return override: every resampled daily log return is shifted by %+.6f so the basket's compound annual growth in USD is %.2f%% (mean annual log return %.4f) instead of the historical %.2f%%.",
+			h.shift, (math.Exp(*cfg.ExpectedAnnualReturn)-1)*100, *cfg.ExpectedAnnualReturn,
+			(math.Exp(tradingDaysPerYear*h.meanDailyUSD)-1)*100))
 	}
 	return out
+}
+
+// fxStatsNote completes the historical-statistics assumption for KRW plans.
+func fxStatsNote(krw bool) string {
+	if krw {
+		return " plus the daily KRW/USD log return, so exchange-rate moves are included"
+	}
+	return ""
 }

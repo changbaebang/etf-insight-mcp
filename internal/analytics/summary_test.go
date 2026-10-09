@@ -204,16 +204,18 @@ func TestAnnualize(t *testing.T) {
 		from, to time.Time
 		want     float64
 		tol      float64
+		wantOK   bool
 	}{
-		{name: "two years of 21% is about 10% a year", total: 0.21, from: day(2020, time.January, 1), to: day(2022, time.January, 1), want: 0.10, tol: 1e-3},
-		{name: "exactly 365 days is annualized as is", total: 0.07, from: day(2021, time.January, 1), to: day(2022, time.January, 1), want: 0.07, tol: 1e-3},
-		{name: "six months are not extrapolated", total: 0.05, from: day(2021, time.January, 1), to: day(2021, time.July, 1), want: 0.05, tol: 0},
-		{name: "loss over four years", total: -0.344, from: day(2018, time.January, 1), to: day(2022, time.January, 1), want: -0.10, tol: 1e-3},
+		{name: "two years of 21% is about 10% a year", total: 0.21, from: day(2020, time.January, 1), to: day(2022, time.January, 1), want: 0.10, tol: 1e-3, wantOK: true},
+		{name: "exactly 365 days is annualized as is", total: 0.07, from: day(2021, time.January, 1), to: day(2022, time.January, 1), want: 0.07, tol: 1e-3, wantOK: true},
+		{name: "six months are not extrapolated", total: 0.05, from: day(2021, time.January, 1), to: day(2021, time.July, 1), want: 0.05, tol: 0, wantOK: false},
+		{name: "loss over four years", total: -0.344, from: day(2018, time.January, 1), to: day(2022, time.January, 1), want: -0.10, tol: 1e-3, wantOK: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := annualize(tt.total, tt.from, tt.to); !approx(got, tt.want, tt.tol) {
-				t.Fatalf("annualize(%v) = %v, want %v", tt.total, got, tt.want)
+			got, ok := annualize(tt.total, tt.from, tt.to)
+			if !approx(got, tt.want, tt.tol) || ok != tt.wantOK {
+				t.Fatalf("annualize(%v) = %v, %v; want %v, %v", tt.total, got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}

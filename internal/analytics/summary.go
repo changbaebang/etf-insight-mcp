@@ -20,10 +20,13 @@ type Window struct {
 	// with dividends reinvested, as a fraction.
 	TotalReturn float64
 	// Annualized is the compound annual growth rate when the window spans
-	// at least 365 calendar days. Shorter windows are not extrapolated
-	// (annualizing a few months is misleading), so Annualized then equals
-	// TotalReturn.
+	// at least 365 calendar days (AnnualizedAvailable true). Shorter
+	// windows are not extrapolated (annualizing a few months is
+	// misleading): Annualized then equals TotalReturn and
+	// AnnualizedAvailable is false, so callers can omit it.
 	Annualized float64
+	// AnnualizedAvailable reports whether Annualized is a real CAGR.
+	AnnualizedAvailable bool
 	// From is the date of the window's first bar: the last bar on or
 	// before AsOf minus the period.
 	From time.Time
@@ -40,14 +43,28 @@ type windowSpec struct {
 }
 
 var windowSpecs = []windowSpec{
-	{label: "1m", back: func(t time.Time) time.Time { return t.AddDate(0, -1, 0) }},
-	{label: "3m", back: func(t time.Time) time.Time { return t.AddDate(0, -3, 0) }},
-	{label: "6m", back: func(t time.Time) time.Time { return t.AddDate(0, -6, 0) }},
-	{label: "1y", back: func(t time.Time) time.Time { return t.AddDate(-1, 0, 0) }},
-	{label: "3y", back: func(t time.Time) time.Time { return t.AddDate(-3, 0, 0) }},
-	{label: "5y", back: func(t time.Time) time.Time { return t.AddDate(-5, 0, 0) }},
-	{label: "10y", back: func(t time.Time) time.Time { return t.AddDate(-10, 0, 0) }},
+	{label: "1m", back: func(t time.Time) time.Time { return monthsBack(t, 1) }},
+	{label: "3m", back: func(t time.Time) time.Time { return monthsBack(t, 3) }},
+	{label: "6m", back: func(t time.Time) time.Time { return monthsBack(t, 6) }},
+	{label: "1y", back: func(t time.Time) time.Time { return monthsBack(t, 12) }},
+	{label: "3y", back: func(t time.Time) time.Time { return monthsBack(t, 36) }},
+	{label: "5y", back: func(t time.Time) time.Time { return monthsBack(t, 60) }},
+	{label: "10y", back: func(t time.Time) time.Time { return monthsBack(t, 120) }},
 	{label: "max", back: nil},
+}
+
+// monthsBack returns the date n months before t, clamped to the last day
+// of the target month when t's day does not exist there. time.AddDate
+// alone would normalise "31 April" to 1 May and "29 February 2023" to 1
+// March, which starts a window a few days late and shortens it.
+func monthsBack(t time.Time, n int) time.Time {
+	back := t.AddDate(0, -n, 0)
+	if back.Day() < t.Day() {
+		// The day overflowed into the next month: step back to the last
+		// day of the intended month.
+		back = back.AddDate(0, 0, -back.Day())
+	}
+	return back
 }
 
 // Summary is a descriptive snapshot of one series as of a date. All
@@ -149,19 +166,19 @@ func computeWindow(sub *market.Series, spec windowSpec, last market.Bar) Window 
 	w.Available = true
 	w.From = from.Date
 	w.TotalReturn = last.AdjClose/from.AdjClose - 1
-	w.Annualized = annualize(w.TotalReturn, from.Date, last.Date)
+	w.Annualized, w.AnnualizedAvailable = annualize(w.TotalReturn, from.Date, last.Date)
 	return w
 }
 
 // annualize converts a total return over [from, to] into a compound
-// annual growth rate when the span is at least 365 days, and returns the
-// total return unchanged otherwise.
-func annualize(total float64, from, to time.Time) float64 {
+// annual growth rate when the span is at least 365 days (ok true), and
+// returns the total return unchanged with ok false otherwise.
+func annualize(total float64, from, to time.Time) (cagr float64, ok bool) {
 	days := to.Sub(from).Hours() / 24
 	if days < 365 {
-		return total
+		return total, false
 	}
-	return math.Pow(1+total, daysPerYear/days) - 1
+	return math.Pow(1+total, daysPerYear/days) - 1, true
 }
 
 // highLow returns the maximum and minimum of values, or zeros when empty.

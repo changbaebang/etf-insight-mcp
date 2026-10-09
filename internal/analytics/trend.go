@@ -34,10 +34,12 @@ const (
 // Classification rule:
 //   - "insufficient-history" when fewer than 200 bars exist up to AsOf;
 //   - "uptrend" when Close > SMA200 and SMA50 > SMA200 and SMA200Slope > 0;
-//   - "downtrend" when Close < SMA200 and SMA50 < SMA200;
+//   - "downtrend" when Close < SMA200 and SMA50 < SMA200 and SMA200Slope < 0;
 //   - "sideways" otherwise.
 //
-// Indicators that need more bars than are available are reported as 0 and
+// With 200 to 219 bars the slope cannot be computed, so the slope
+// condition is dropped on both sides and the state follows the moving
+// averages alone; Reasons says so. Every indicator that lacks history is
 // mentioned in Reasons. Percentages are in percent (4.2 means 4.2%); the
 // other ratios are fractions.
 type Trend struct {
@@ -125,17 +127,29 @@ func classify(t Trend, bars int) (state string, reasons []string) {
 		describeVsAverage(t.PctVsSMA200, "200-day"),
 		describeCross(t.SMA50, t.SMA200),
 	}
-	if bars < longSMABars+slopeBars {
-		reasons = append(reasons, fmt.Sprintf(
-			"200-day average slope needs %d bars, only %d available", longSMABars+slopeBars, bars))
-	} else {
+	slopeKnown := bars >= longSMABars+slopeBars
+	if slopeKnown {
 		reasons = append(reasons, describeSlope(t.SMA200Slope))
+	} else {
+		reasons = append(reasons, fmt.Sprintf(
+			"200-day average slope needs %d bars, only %d available; state judged on the averages alone",
+			longSMABars+slopeBars, bars))
+	}
+	if bars < momentumBars+1 {
+		reasons = append(reasons, fmt.Sprintf(
+			"12-1 momentum needs %d bars, only %d available; reported as 0", momentumBars+1, bars))
+	}
+	if bars < sixMonthBars+1 {
+		reasons = append(reasons, fmt.Sprintf(
+			"6-month return needs %d bars, only %d available; reported as 0", sixMonthBars+1, bars))
 	}
 
+	above := t.Close > t.SMA200 && t.SMA50 > t.SMA200
+	below := t.Close < t.SMA200 && t.SMA50 < t.SMA200
 	switch {
-	case t.Close > t.SMA200 && t.SMA50 > t.SMA200 && t.SMA200Slope > 0:
+	case above && (!slopeKnown || t.SMA200Slope > 0):
 		return StateUptrend, reasons
-	case t.Close < t.SMA200 && t.SMA50 < t.SMA200:
+	case below && (!slopeKnown || t.SMA200Slope < 0):
 		return StateDowntrend, reasons
 	default:
 		return StateSideways, reasons

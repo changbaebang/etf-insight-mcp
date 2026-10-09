@@ -17,7 +17,8 @@ func TestAnalyzeTrendStates(t *testing.T) {
 		{name: "strictly rising", bars: 300, dailyLog: 0.001, wantState: StateUptrend, wantReason: "above 200-day average"},
 		{name: "strictly falling", bars: 300, dailyLog: -0.001, wantState: StateDowntrend, wantReason: "below 200-day average"},
 		{name: "flat", bars: 300, dailyLog: 0, wantState: StateSideways, wantReason: "equal to 200-day average"},
-		{name: "rising but slope unavailable", bars: 210, dailyLog: 0.001, wantState: StateSideways, wantReason: "slope needs 220 bars"},
+		{name: "rising but slope unavailable", bars: 210, dailyLog: 0.001, wantState: StateUptrend, wantReason: "slope needs 220 bars"},
+		{name: "falling but slope unavailable", bars: 210, dailyLog: -0.001, wantState: StateDowntrend, wantReason: "judged on the averages alone"},
 		{name: "too short", bars: 100, dailyLog: 0.001, wantState: StateInsufficientHistory, wantReason: "only 100 of the 200 bars"},
 	}
 	for _, tt := range tests {

@@ -27,13 +27,15 @@ func basePlan(symbols ...string) MCPlan {
 }
 
 // deterministicFinal is the final value of a plan whose price grows by a
-// constant daily log return c and whose contributions are placed every
-// interval steps starting at step 0: net * sum over k of exp(c * (steps -
-// k*interval)).
-func deterministicFinal(net, c float64, steps, interval int) float64 {
+// constant daily log return c and whose contributions are placed on every
+// step where floor(t/period) advances, starting at step 0: net * sum over
+// contribution steps t of exp(c * (steps - t)).
+func deterministicFinal(net, c float64, steps int, period float64) float64 {
 	var total float64
-	for t := 0; t < steps; t += interval {
-		total += net * math.Exp(c*float64(steps-t))
+	for t := 0; t < steps; t++ {
+		if contributesAt(t, period) {
+			total += net * math.Exp(c*float64(steps-t))
+		}
 	}
 	return total
 }
@@ -47,7 +49,7 @@ func TestMonteCarloZeroVolatility(t *testing.T) {
 		wantContributions int
 	}{
 		{CadenceDaily, 252},
-		{CadenceWeekly, 51},
+		{CadenceWeekly, 52},
 		{CadenceMonthly, 12},
 	}
 	for _, tt := range tests {
@@ -64,8 +66,8 @@ func TestMonteCarloZeroVolatility(t *testing.T) {
 			if want := float64(tt.wantContributions) * plan.Amount; res.Invested != want {
 				t.Fatalf("Invested = %v, want %v", res.Invested, want)
 			}
-			interval, _ := tt.cadence.interval()
-			want := deterministicFinal(plan.Amount*(1-plan.FeeRate), c, 252, interval)
+			period, _ := tt.cadence.period()
+			want := deterministicFinal(plan.Amount*(1-plan.FeeRate), c, 252, period)
 			for _, key := range percentileKeys {
 				got, ok := res.Percentiles[key]
 				if !ok {
@@ -423,22 +425,22 @@ func TestCommonDates(t *testing.T) {
 	}
 }
 
-func TestCadenceInterval(t *testing.T) {
+func TestCadencePeriod(t *testing.T) {
 	tests := []struct {
 		cadence Cadence
-		want    int
+		want    float64
 		wantErr bool
 	}{
 		{CadenceDaily, 1, false},
-		{CadenceWeekly, 5, false},
+		{CadenceWeekly, 252.0 / 52, false},
 		{CadenceMonthly, 21, false},
 		{"", 0, true},
 		{"Daily", 0, true},
 	}
 	for _, tt := range tests {
-		got, err := tt.cadence.interval()
+		got, err := tt.cadence.period()
 		if (err != nil) != tt.wantErr || got != tt.want {
-			t.Errorf("Cadence(%q).interval() = %d, %v; want %d, err=%v", tt.cadence, got, err, tt.want, tt.wantErr)
+			t.Errorf("Cadence(%q).period() = %v, %v; want %v, err=%v", tt.cadence, got, err, tt.want, tt.wantErr)
 		}
 		if err != nil && !strings.Contains(err.Error(), string(tt.cadence)) {
 			t.Errorf("error %v should name the cadence", err)
