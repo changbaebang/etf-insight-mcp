@@ -216,7 +216,7 @@ func parseMeta(m chartMeta, loc *time.Location, now time.Time) market.Meta {
 	if meta.Exchange == "" {
 		meta.Exchange = m.ExchangeName
 	}
-	if m.FirstTradeDate > 0 {
+	if m.FirstTradeDate != 0 { // negative = before 1970, still a real date
 		meta.FirstTradeDate = localDay(m.FirstTradeDate, loc)
 	}
 	return meta

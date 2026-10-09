@@ -181,6 +181,11 @@ func (c *Client) fetchOnce(ctx context.Context, symbol string) ([]byte, error) {
 	}
 }
 
+// historyStart is the period1 sent for "all history": 1900-01-01 UTC.
+// Yahoo accepts negative Unix times, and period1=0 would silently cut
+// pre-1970 history (^GSPC starts in 1927).
+const historyStart int64 = -2208988800
+
 // chartURL builds the request URL for symbol: the whole daily history
 // with dividend events and adjusted closes. The span is given as an
 // explicit period1/period2 pair rather than range=max because, as of
@@ -189,7 +194,7 @@ func (c *Client) fetchOnce(ctx context.Context, symbol string) ([]byte, error) {
 // period honours interval=1d.
 func (c *Client) chartURL(symbol string) string {
 	q := url.Values{}
-	q.Set("period1", "0")
+	q.Set("period1", strconv.FormatInt(historyStart, 10))
 	q.Set("period2", strconv.FormatInt(time.Now().Unix(), 10))
 	q.Set("interval", "1d")
 	q.Set("events", "div")

@@ -289,6 +289,16 @@ func TestParseChartShapes(t *testing.T) {
 			},
 		},
 		{
+			name: "a first trade date before 1970 is kept",
+			body: payload(map[string]any{"symbol": "^GSPC", "exchangeTimezoneName": "America/New_York", "firstTradeDate": -1325583000},
+				[]int64{mon}, []any{f(1)}, []any{f(1)}, nil),
+			check: func(t *testing.T, s *market.Series) {
+				if got := s.Meta.FirstTradeDate.Format(market.DateLayout); got != "1927-12-30" {
+					t.Errorf("FirstTradeDate = %s, want 1927-12-30", got)
+				}
+			},
+		},
+		{
 			name: "empty history is a valid empty series",
 			body: payload(nyMeta(), nil, nil, nil, nil),
 			check: func(t *testing.T, s *market.Series) {

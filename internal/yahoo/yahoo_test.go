@@ -126,7 +126,7 @@ func TestClientSeries(t *testing.T) {
 	if rec.path != "/v8/finance/chart/SPY" {
 		t.Errorf("path = %q, want upper-cased trimmed symbol", rec.path)
 	}
-	for _, want := range []string{"period1=0", "period2=", "interval=1d", "events=div", "includeAdjustedClose=true"} {
+	for _, want := range []string{"period1=-2208988800", "period2=", "interval=1d", "events=div", "includeAdjustedClose=true"} {
 		if !strings.Contains(rec.query, want) {
 			t.Errorf("query %q lacks %q", rec.query, want)
 		}
