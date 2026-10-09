@@ -1,11 +1,14 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,9 +28,10 @@ var (
 type fakeSource struct {
 	mu      sync.Mutex
 	calls   int
-	err     error            // returned by every call when non-nil
-	failFor map[string]error // per-symbol failures
-	gate    chan struct{}    // when non-nil, Series blocks until closed or ctx is done
+	err     error                              // returned by every call when non-nil
+	failFor map[string]error                   // per-symbol failures
+	gate    chan struct{}                      // when non-nil, Series blocks until closed or ctx is done
+	series  func(symbol string) *market.Series // what a successful call returns; nil means sampleSeries
 
 	inflight    atomic.Int32
 	maxInflight atomic.Int32
@@ -49,19 +53,33 @@ func (f *fakeSource) Series(ctx context.Context, symbol string) (*market.Series,
 	if err == nil {
 		err = f.failFor[symbol]
 	}
+	series := f.series
 	f.mu.Unlock()
 
-	if f.gate != nil {
-		select {
-		case <-f.gate:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	if gateErr := f.waitGate(ctx); gateErr != nil {
+		return nil, gateErr
 	}
 	if err != nil {
 		return nil, err
 	}
+	if series != nil {
+		return series(symbol), nil
+	}
 	return sampleSeries(symbol), nil
+}
+
+// waitGate blocks until the gate is opened or ctx is done; a nil gate
+// never blocks.
+func (f *fakeSource) waitGate(ctx context.Context) error {
+	if f.gate == nil {
+		return nil
+	}
+	select {
+	case <-f.gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (f *fakeSource) count() int {
@@ -92,8 +110,7 @@ func sampleSeries(symbol string) *market.Series {
 func newStore(t *testing.T, ttl time.Duration) (*Store, *fakeSource) {
 	t.Helper()
 	f := &fakeSource{}
-	s := New(f, t.TempDir(), ttl)
-	s.now = func() time.Time { return t0 }
+	s := New(f, t.TempDir(), ttl, WithClock(func() time.Time { return t0 }))
 	return s, f
 }
 
@@ -529,8 +546,12 @@ func TestStoreCorruptFileIsMiss(t *testing.T) {
 		body string
 	}{
 		{"garbage", "not json"},
-		{"missing series", `{"FetchedAt":"2026-10-08T09:00:00Z"}`},
-		{"invalid series", `{"FetchedAt":"2026-10-08T09:00:00Z","Series":{"Meta":{"Symbol":"SPY"},"Bars":[{"Date":"2026-01-02T00:00:00Z","Close":0,"AdjClose":1}]}}`},
+		{"array", "[1,2,3]"},
+		{"v1 missing series", `{"FetchedAt":"2026-10-08T09:00:00Z"}`},
+		{"v1 invalid series", `{"FetchedAt":"2026-10-08T09:00:00Z","Series":{"Meta":{"Symbol":"SPY"},"Bars":[{"Date":"2026-01-02T00:00:00Z","Close":0,"AdjClose":1}]}}`},
+		{"v2 missing series", `{"version":2,"fetched_at":"2026-10-08T09:00:00Z","full_fetched_at":"2026-10-08T09:00:00Z"}`},
+		{"v2 invalid series", `{"version":2,"fetched_at":"2026-10-08T09:00:00Z","full_fetched_at":"2026-10-08T09:00:00Z","series":{"Meta":{"Symbol":"SPY"},"Bars":[{"Date":"2026-01-02T00:00:00Z","Close":1,"AdjClose":0}]}}`},
+		{"unknown version", `{"version":7,"fetched_at":"2026-10-08T09:00:00Z","series":{"Meta":{"Symbol":"SPY"},"Bars":[]}}`},
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -571,6 +592,39 @@ func TestStoreRoundTripsSeriesThroughFile(t *testing.T) {
 	}
 	if f.count() != 1 {
 		t.Errorf("calls = %d, want 1", f.count())
+	}
+}
+
+func TestStoreWritesVersion2(t *testing.T) {
+	s, _ := newStore(t, time.Hour)
+	if _, err := s.Series(context.Background(), "SPY"); err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+	data, err := os.ReadFile(s.path("SPY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range []string{"version", "fetched_at", "full_fetched_at", "bars", "first_date", "last_date", "series"} {
+		if _, ok := top[key]; !ok {
+			t.Errorf("file lacks %q key; has %v", key, slices.Sorted(maps.Keys(top)))
+		}
+	}
+	if string(top["version"]) != "2" || string(top["bars"]) != "3" {
+		t.Errorf("version = %s, bars = %s; want 2 and 3", top["version"], top["bars"])
+	}
+	if bytes.LastIndex(data, []byte(`"series"`)) < bytes.LastIndex(data, []byte(`"bars"`)) {
+		t.Error("series is not encoded after the summary fields; Status would have to read the bars")
+	}
+	e := readFile(t, s, "SPY")
+	if !e.FetchedAt.Equal(t0) || !e.FullFetchedAt.Equal(t0) {
+		t.Errorf("fetched_at = %v, full_fetched_at = %v; want both %v", e.FetchedAt, e.FullFetchedAt, t0)
+	}
+	if !e.FirstDate.Equal(sampleSeries("SPY").Bars[0].Date) || !e.LastDate.Equal(sampleSeries("SPY").Bars[2].Date) {
+		t.Errorf("first_date = %v, last_date = %v", e.FirstDate, e.LastDate)
 	}
 }
 
