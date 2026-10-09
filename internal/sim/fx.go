@@ -13,15 +13,16 @@ import (
 // For a USD plan the rate is always 1. For a KRW plan the rate on a day is
 // the Close of the FX bar on that date, or of the last FX bar before it
 // when the FX series has no bar that day (market.Series.IndexOn), so a US
-// trading day that is a Korean holiday still gets a rate.
+// trading day that is a Korean holiday still gets a rate. The calendar is
+// bounded by the FX series' first and last bar (see buildCalendar), so the
+// fallback never reaches back before the history or past its end.
 type converter struct {
 	fx *market.Series // nil for USD plans
 }
 
 // newConverter builds the converter for currency. For KRW it requires a
-// valid fx series with a bar on or before firstDay, the first trading day
-// of the simulation.
-func newConverter(currency string, fx *market.Series, firstDay time.Time) (*converter, error) {
+// valid fx series.
+func newConverter(currency string, fx *market.Series) (*converter, error) {
 	if currency != CurrencyKRW {
 		return &converter{}, nil
 	}
@@ -31,8 +32,8 @@ func newConverter(currency string, fx *market.Series, firstDay time.Time) (*conv
 	if err := fx.Validate(); err != nil {
 		return nil, fmt.Errorf("sim: fx series: %w", err)
 	}
-	if _, ok := fx.IndexOn(firstDay); !ok {
-		return nil, fmt.Errorf("sim: fx series has no bar on or before %s", formatDate(firstDay))
+	if fx.Len() == 0 {
+		return nil, errors.New("sim: fx series has no bars")
 	}
 	return &converter{fx: fx}, nil
 }
@@ -40,6 +41,11 @@ func newConverter(currency string, fx *market.Series, firstDay time.Time) (*conv
 // enabled reports whether a real exchange rate is applied.
 func (c *converter) enabled() bool {
 	return c.fx != nil
+}
+
+// series returns the FX series, nil for USD plans.
+func (c *converter) series() *market.Series {
+	return c.fx
 }
 
 // rate returns how many units of the plan currency one USD is worth on

@@ -8,13 +8,15 @@
 //     lost to commissions; the net remainder is split by Allocation.Weight
 //     and invested at that day's close.
 //   - Shares are fractional; nothing is rounded to whole shares.
-//   - Plan.Reinvest selects the dividend model: true buys and values shares
-//     at Bar.AdjClose (dividends reinvested on the pay date), false uses
-//     Bar.Close and keeps cash dividends uninvested.
+//   - Shares are always bought and valued at Bar.Close, so share counts are
+//     real. Plan.Reinvest selects the dividend model: true spends every
+//     dividend on more shares at the ex-dividend date's close, false keeps
+//     cash dividends uninvested.
 //   - A KRW plan converts each contribution to USD at that day's exchange
 //     rate and values holdings back into KRW at the valuation day's rate.
 //   - The trading calendar is the set of days on which every allocated
-//     symbol has a bar.
+//     symbol (and every Plan.CalendarSymbols symbol) has a bar, bounded
+//     for KRW plans by the exchange-rate history.
 package sim
 
 import (
@@ -101,12 +103,19 @@ type Plan struct {
 	// e.g. 0.001 = 0.1%; 0 <= FeeRate < 1. The fee is taken before the
 	// contribution is split between symbols.
 	FeeRate float64
-	// Reinvest selects the dividend model. true: shares are bought and
-	// valued at Bar.AdjClose, which treats every dividend as reinvested on
-	// its pay date. false: shares are bought and valued at Bar.Close, and
-	// on every trading day shares × Bar.Dividend is credited to uninvested
-	// cash that counts towards FinalValue but is never reinvested.
+	// Reinvest selects the dividend model. Shares are always bought and
+	// valued at Bar.Close. true: on every ex-dividend date shares ×
+	// Bar.Dividend buys more shares at that day's close. false: the same
+	// amount is credited to uninvested cash that counts towards FinalValue
+	// but is never reinvested.
 	Reinvest bool
+	// CalendarSymbols lists symbols that are not bought but whose trading
+	// days further restrict the calendar and whose history bounds the
+	// range, exactly like an allocated symbol. Two plans that share the
+	// same CalendarSymbols ∪ allocations therefore contribute on identical
+	// days, which makes their results comparable. Each symbol needs an
+	// entry in Input.Series.
+	CalendarSymbols []string
 }
 
 // Input is the price data a plan is simulated against.
@@ -127,15 +136,19 @@ func Run(p Plan, in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	series, err := lookupSeries(p.Allocations, in.Series)
+	allocated, err := lookupSeries(allocationSymbols(p.Allocations), in.Series)
 	if err != nil {
 		return nil, err
 	}
-	cal, notes, err := buildCalendar(p, series)
+	extra, err := lookupSeries(p.CalendarSymbols, in.Series)
 	if err != nil {
 		return nil, err
 	}
-	fx, err := newConverter(p.Currency, in.FX, cal.days[0])
+	fx, err := newConverter(p.Currency, in.FX)
+	if err != nil {
+		return nil, err
+	}
+	cal, notes, err := buildCalendar(p, allocated, extra, fx.series())
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +199,47 @@ func normalise(p Plan) (Plan, error) {
 	if math.IsNaN(p.FeeRate) || p.FeeRate < 0 || p.FeeRate >= 1 {
 		return Plan{}, fmt.Errorf("sim: fee rate must be in [0, 1), got %v", p.FeeRate)
 	}
+
+	p.CalendarSymbols, err = normaliseCalendarSymbols(p.CalendarSymbols, p.Allocations)
+	if err != nil {
+		return Plan{}, err
+	}
 	return p, nil
+}
+
+// normaliseCalendarSymbols trims and upper-cases the calendar symbols and
+// drops duplicates and symbols that are already allocated.
+func normaliseCalendarSymbols(syms []string, allocs []Allocation) ([]string, error) {
+	if len(syms) == 0 {
+		return nil, nil
+	}
+	allocated := make(map[string]bool, len(allocs))
+	for _, a := range allocs {
+		allocated[a.Symbol] = true
+	}
+	seen := make(map[string]bool, len(syms))
+	out := make([]string, 0, len(syms))
+	for i, raw := range syms {
+		sym := strings.ToUpper(strings.TrimSpace(raw))
+		if sym == "" {
+			return nil, fmt.Errorf("sim: calendar symbol %d is empty", i)
+		}
+		if allocated[sym] || seen[sym] {
+			continue
+		}
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	return out, nil
+}
+
+// allocationSymbols lists the symbols of allocs in order.
+func allocationSymbols(allocs []Allocation) []string {
+	out := make([]string, len(allocs))
+	for i, a := range allocs {
+		out[i] = a.Symbol
+	}
+	return out
 }
 
 // normaliseAllocations validates the allocations and returns a copy with
@@ -225,22 +278,22 @@ func positiveFinite(x float64) bool {
 	return x > 0 && !math.IsInf(x, 1)
 }
 
-// lookupSeries resolves every allocation to its series and checks the
-// series invariants.
-func lookupSeries(allocs []Allocation, series map[string]*market.Series) ([]*market.Series, error) {
-	out := make([]*market.Series, len(allocs))
-	for i, a := range allocs {
-		s, ok := series[a.Symbol]
+// lookupSeries resolves every symbol to its series and checks the series
+// invariants.
+func lookupSeries(symbols []string, series map[string]*market.Series) ([]named, error) {
+	out := make([]named, len(symbols))
+	for i, sym := range symbols {
+		s, ok := series[sym]
 		if !ok || s == nil {
-			return nil, fmt.Errorf("sim: no price series for %s", a.Symbol)
+			return nil, fmt.Errorf("sim: no price series for %s", sym)
 		}
 		if err := s.Validate(); err != nil {
-			return nil, fmt.Errorf("sim: series %s: %w", a.Symbol, err)
+			return nil, fmt.Errorf("sim: series %s: %w", sym, err)
 		}
 		if s.Len() == 0 {
-			return nil, fmt.Errorf("sim: series %s has no bars", a.Symbol)
+			return nil, fmt.Errorf("sim: series %s has no bars", sym)
 		}
-		out[i] = s
+		out[i] = named{sym: sym, s: s}
 	}
 	return out, nil
 }

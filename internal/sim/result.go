@@ -6,7 +6,10 @@ import "time"
 type Holding struct {
 	// Symbol is the upper-case ticker.
 	Symbol string
-	// Shares is the fractional number of shares held at the end.
+	// Shares is the fractional number of shares held at the end. Shares are
+	// bought at Bar.Close, so this is a real, split-adjusted share count
+	// that can be multiplied by a quoted price; with Plan.Reinvest it
+	// includes the shares bought with dividends.
 	Shares float64
 	// Invested is the gross amount contributed to this symbol (its weight
 	// of every contribution, fees included), in the plan currency, so the
@@ -66,9 +69,15 @@ type Result struct {
 	ReturnPct float64
 	// AnnualizedReturn is the money-weighted annual rate as a fraction
 	// (0.08 = 8%): the XIRR of −Amount on every contribution day and
-	// +FinalValue on End. It is 0 with an explanatory note when no rate in
-	// [-99.99%, 1000%] fits, for example when the range is a single day.
+	// +FinalValue on End. It is only meaningful when
+	// AnnualizedReturnComputed is true; otherwise it is 0 and Notes
+	// explains why (no rate in [-99.99%, 1000%] fits, for example when the
+	// range is a single day). Callers should treat short ranges with
+	// caution: a week annualised is an extrapolation, not a track record.
 	AnnualizedReturn float64
+	// AnnualizedReturnComputed reports whether AnnualizedReturn holds a
+	// fitted rate.
+	AnnualizedReturnComputed bool
 	// MaxDrawdownPct is the largest peak-to-trough fall of the unitised net
 	// asset value, as a positive percentage (33.9 = 33.9%). The NAV is a
 	// time-weighted path that excludes contributions; see engine.nav for
@@ -76,8 +85,8 @@ type Result struct {
 	// is in KRW, so exchange-rate moves are part of the drawdown.
 	MaxDrawdownPct float64
 	// CashDividends is the uninvested cash accumulated from dividends when
-	// !Plan.Reinvest, converted at each pay date's rate. It is 0 when
-	// dividends are reinvested.
+	// !Plan.Reinvest, converted at each ex-dividend date's rate. It is 0
+	// when dividends are reinvested.
 	CashDividends float64
 	// Holdings lists the final position per symbol in allocation order.
 	Holdings []Holding

@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -197,12 +198,12 @@ func TestRunFee(t *testing.T) {
 
 // TestRunKRW uses a rate of 1000 for the first contribution and 1200 for
 // the second and for the final valuation. The FX series has bars only on
-// 2024-01-01 and 2024-01-31 so every later day falls back to the last bar
-// before it.
+// 2024-01-01, 2024-01-31 and 2024-02-29, so every other day falls back to
+// the last bar before it; the last bar keeps the range open to Feb 29.
 func TestRunKRW(t *testing.T) {
 	spy := newSeries(t, "SPY", "2024-01-01", 44, constant(100)) // through 2024-02-29
-	fx := barsSeries(t, "KRW=X", map[string]float64{"2024-01-01": 1000, "2024-01-31": 1200},
-		[]string{"2024-01-01", "2024-01-31"})
+	fx := barsSeries(t, "KRW=X", map[string]float64{"2024-01-01": 1000, "2024-01-31": 1200, "2024-02-29": 1200},
+		[]string{"2024-01-01", "2024-01-31", "2024-02-29"})
 
 	p := singlePlan("SPY", Monthly, 1_200_000)
 	p.Currency = "krw"
@@ -283,20 +284,142 @@ func TestRunCashDividends(t *testing.T) {
 	})
 }
 
-func TestRunReinvestUsesAdjClose(t *testing.T) {
+func TestRunReinvestBuysSharesWithDividends(t *testing.T) {
 	spy := newSeries(t, "SPY", "2024-01-01", 5, constant(100))
 	for i := range spy.Bars {
-		spy.Bars[i].AdjClose = 50
+		spy.Bars[i].AdjClose = 50 // never used: shares are bought at Close
 	}
-	spy.Bars[3].Dividend = 1 // must be ignored when Reinvest
+	spy.Bars[3].Dividend = 1
 
 	p := singlePlan("SPY", Daily, 100)
 	p.Reinvest = true
 	res := mustRun(t, p, seriesInput(spy))
 
-	requireFloat(t, "Holdings[0].Shares", res.Holdings[0].Shares, 10, tight)
-	requireFloat(t, "FinalValue", res.FinalValue, 500, tight)
+	// One share a day; on day 3 the 3 shares held earn 3 USD, which buys
+	// 0.03 shares at 100 before that day's purchase: 5.03 shares in total.
+	requireFloat(t, "Holdings[0].Shares", res.Holdings[0].Shares, 5.03, tight)
+	requireFloat(t, "FinalValue", res.FinalValue, 503, tight)
+	requireFloat(t, "Profit", res.Profit, 3, tight)
 	requireFloat(t, "CashDividends", res.CashDividends, 0, tight)
+	// Reinvesting the dividend offsets nothing here (flat price), so the NAV
+	// path shows the dividend as a gain, not a drawdown.
+	requireFloat(t, "MaxDrawdownPct", res.MaxDrawdownPct, 0, tight)
+}
+
+// TestRunReinvestMatchesTotalReturn checks that explicit reinvestment
+// reproduces the total return of a dividend-adjusted price path: a 100 USD
+// share that drops to 98 on the ex-date while paying 2 leaves the investor
+// whole.
+func TestRunReinvestMatchesTotalReturn(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 3, constant(100))
+	spy.Bars[1].Close, spy.Bars[1].Dividend = 98, 2
+	spy.Bars[2].Close = 98
+
+	p := singlePlan("SPY", Monthly, 100) // one contribution on day 0
+	p.Reinvest = true
+	res := mustRun(t, p, seriesInput(spy))
+
+	// 1 share; ex-date: 1 × 2 / 98 more shares; value = (1 + 2/98) × 98 = 100.
+	requireFloat(t, "FinalValue", res.FinalValue, 100, tight)
+	requireFloat(t, "Holdings[0].Shares", res.Holdings[0].Shares, 1+2.0/98, tight)
+	requireFloat(t, "MaxDrawdownPct", res.MaxDrawdownPct, 0, tight)
+}
+
+func TestRunCalendarSymbols(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 20, constant(100))  // Jan 1 .. Jan 26
+	schd := newSeries(t, "SCHD", "2024-01-15", 20, constant(50)) // Jan 15 .. Feb 9
+	schd.Bars = append(schd.Bars[:3], schd.Bars[4:]...)          // drop Jan 18
+
+	p := singlePlan("SPY", Daily, 100)
+	p.CalendarSymbols = []string{" schd ", "SCHD", "SPY"} // normalised, deduped, allocated dropped
+	res := mustRun(t, p, seriesInput(spy, schd))
+
+	// Range bounded by both histories: Jan 15 .. Jan 26 is 10 weekdays,
+	// minus Jan 18 which SCHD lacks.
+	requireDate(t, "Start", res.Start, "2024-01-15")
+	requireDate(t, "End", res.End, "2024-01-26")
+	if res.Contributions != 9 {
+		t.Errorf("Contributions = %d, want 9", res.Contributions)
+	}
+	if len(res.Holdings) != 1 || res.Holdings[0].Symbol != "SPY" {
+		t.Errorf("Holdings = %+v, want SPY only", res.Holdings)
+	}
+	if len(res.Notes) != 0 {
+		t.Errorf("Notes = %q, want none for a zero start", res.Notes)
+	}
+
+	// The mirror plan on SCHD with SPY as calendar symbol contributes on the
+	// very same days, which is what makes two legs comparable.
+	q := singlePlan("SCHD", Daily, 100)
+	q.CalendarSymbols = []string{"SPY"}
+	mirror := mustRun(t, q, seriesInput(spy, schd))
+	if mirror.Contributions != res.Contributions || !mirror.Start.Equal(res.Start) || !mirror.End.Equal(res.End) {
+		t.Errorf("mirror plan ran %d contributions %s..%s, want the same days as the base plan",
+			mirror.Contributions, formatDate(mirror.Start), formatDate(mirror.End))
+	}
+
+	_, err := Run(Plan{
+		Allocations: []Allocation{{Symbol: "SPY", Weight: 1}}, Amount: 100, Currency: CurrencyUSD,
+		Cadence: Daily, CalendarSymbols: []string{"QQQ"},
+	}, seriesInput(spy))
+	if err == nil || !strings.Contains(err.Error(), "no price series for QQQ") {
+		t.Errorf("unknown calendar symbol error = %v", err)
+	}
+}
+
+func TestRunClampsToFXHistory(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 30, constant(100))   // Jan 1 .. Feb 9
+	fx := newSeries(t, "KRW=X", "2024-01-08", 15, constant(1000)) // Jan 8 .. Jan 26
+	p := singlePlan("SPY", Daily, 100_000)
+	p.Currency = CurrencyKRW
+	p.Start, p.End = date(t, "2024-01-01"), date(t, "2024-02-09")
+	in := seriesInput(spy)
+	in.FX = fx
+	res := mustRun(t, p, in)
+
+	requireDate(t, "Start", res.Start, "2024-01-08")
+	requireDate(t, "End", res.End, "2024-01-26")
+	if res.Contributions != 15 {
+		t.Errorf("Contributions = %d, want 15", res.Contributions)
+	}
+	wantNotes := []string{
+		"start moved from 2024-01-01 to 2024-01-08: KRW=X exchange-rate history begins there",
+		"end moved from 2024-02-09 to 2024-01-26: KRW=X exchange-rate history ends there",
+	}
+	if len(res.Notes) != 2 || res.Notes[0] != wantNotes[0] || res.Notes[1] != wantNotes[1] {
+		t.Errorf("Notes = %q, want %q", res.Notes, wantNotes)
+	}
+}
+
+func TestRunMidPeriodStartNote(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 30, constant(100))
+	p := singlePlan("SPY", Monthly, 100)
+	p.Start = date(t, "2024-01-17")
+	res := mustRun(t, p, seriesInput(spy))
+	if res.Contributions != 2 {
+		t.Errorf("Contributions = %d, want 2 (Jan 17 and Feb 1)", res.Contributions)
+	}
+	if len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "falls mid-month") {
+		t.Errorf("Notes = %q, want a mid-month note", res.Notes)
+	}
+}
+
+func TestRunAnnualizedReturnComputed(t *testing.T) {
+	spy := newSeries(t, "SPY", "2023-01-02", 260, func(k int) float64 { return 100 + float64(k) })
+	res := mustRun(t, singlePlan("SPY", Monthly, 100), seriesInput(spy))
+	if !res.AnnualizedReturnComputed || res.AnnualizedReturn <= 0 {
+		t.Errorf("AnnualizedReturn = %v computed=%v, want a positive fitted rate", res.AnnualizedReturn, res.AnnualizedReturnComputed)
+	}
+
+	// Two days, +1% a day: the fitted rate would exceed 1000%/yr.
+	steep := newSeries(t, "STEEP", "2024-01-01", 2, func(k int) float64 { return 100 * math.Pow(1.01, float64(k)) })
+	res = mustRun(t, singlePlan("STEEP", Daily, 100), seriesInput(steep))
+	if res.AnnualizedReturnComputed || res.AnnualizedReturn != 0 {
+		t.Errorf("AnnualizedReturn = %v computed=%v, want 0 and false", res.AnnualizedReturn, res.AnnualizedReturnComputed)
+	}
+	if len(res.Notes) != 1 || res.Notes[0] != annualizedUnavailableNote {
+		t.Errorf("Notes = %q, want the annualized-unavailable note", res.Notes)
+	}
 }
 
 func TestRunMaxDrawdownUsesNAV(t *testing.T) {
@@ -422,7 +545,7 @@ func TestRunErrors(t *testing.T) {
 	bad := newSeries(t, "BAD", "2024-01-01", 3, constant(100))
 	bad.Bars[1].Close = 0
 	march := newSeries(t, "MAR", "2024-03-01", 10, constant(100))
-	lateFX := newSeries(t, "KRW=X", "2024-02-01", 10, constant(1000))
+	noFXBars := &market.Series{Meta: market.Meta{Symbol: "KRW=X"}}
 	// Saturdays only: inside SPY's range but never on one of its days.
 	weekends := barsSeries(t, "SAT", map[string]float64{"2024-01-06": 1, "2024-01-13": 1, "2024-01-20": 1},
 		[]string{"2024-01-06", "2024-01-13", "2024-01-20"})
@@ -516,11 +639,11 @@ func TestRunErrors(t *testing.T) {
 			p.Currency = CurrencyKRW
 			return p
 		}, seriesInput(spy), "needs an FX series"},
-		{"FX starts after the first day", func(*testing.T) Plan {
+		{"KRW with an empty FX series", func(*testing.T) Plan {
 			p := base()
 			p.Currency = CurrencyKRW
 			return p
-		}, Input{Series: seriesInput(spy).Series, FX: lateFX}, "no bar on or before 2024-01-01"},
+		}, Input{Series: seriesInput(spy).Series, FX: noFXBars}, "fx series has no bars"},
 		{"empty intersection", func(*testing.T) Plan {
 			p := base()
 			p.Allocations = []Allocation{{Symbol: "SPY", Weight: 0.5}, {Symbol: "MAR", Weight: 0.5}}
@@ -564,8 +687,13 @@ func TestRunSingleDay(t *testing.T) {
 	requireFloat(t, "FinalValue", res.FinalValue, 100, tight)
 	// Buying and valuing on the same day gives no time span to annualise.
 	requireFloat(t, "AnnualizedReturn", res.AnnualizedReturn, 0, tight)
-	if len(res.Notes) != 1 || !strings.HasPrefix(res.Notes[0], "annualized return not computed: ") {
-		t.Errorf("Notes = %q, want one note about the annualized return", res.Notes)
+	// Jan 3 is mid-month, so two notes: the schedule note and the missing
+	// annualized return.
+	if len(res.Notes) != 2 || res.Notes[1] != annualizedUnavailableNote {
+		t.Errorf("Notes = %q, want a mid-month note followed by the annualized-unavailable note", res.Notes)
+	}
+	if res.AnnualizedReturnComputed {
+		t.Error("AnnualizedReturnComputed = true for a single-day range")
 	}
 	if len(res.Timeline) != 1 {
 		t.Errorf("Timeline = %+v, want one point", res.Timeline)

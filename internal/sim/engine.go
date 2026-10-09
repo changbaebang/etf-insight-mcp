@@ -2,8 +2,6 @@ package sim
 
 import (
 	"time"
-
-	"github.com/changbaebang/etf-insight-mcp/internal/market"
 )
 
 // engine holds the running state of one simulation. All money fields are
@@ -14,7 +12,7 @@ type engine struct {
 	fx      *converter
 	contrib []bool // contrib[k] is true when days[k] is a contribution day
 
-	shares     []float64 // per allocation
+	shares     []float64 // per allocation, real (split-adjusted) shares
 	investedBy []float64 // gross contributions per allocation
 
 	contributions int
@@ -47,13 +45,13 @@ func newEngine(p Plan, cal *calendar, fx *converter) *engine {
 	}
 }
 
-// run walks the calendar day by day. On each day, in this order: cash
-// dividends are credited (when !Reinvest), the NAV is recorded, the
-// contribution is invested (when it is a contribution day) and the closing
-// value is sampled for the timeline. Dividends come before the NAV so that
-// the price drop on the ex-dividend date is offset by the cash received,
-// as in a total-return index; otherwise every dividend would register as
-// a drawdown.
+// run walks the calendar day by day. On each day, in this order: dividends
+// are handled (reinvested into more shares, or credited to cash), the NAV
+// is recorded, the contribution is invested (when it is a contribution
+// day) and the closing value is sampled for the timeline. Dividends come
+// before the NAV so that the price drop on the ex-dividend date is offset
+// by the shares or cash received, as in a total-return index; otherwise
+// every dividend would register as a drawdown.
 func (e *engine) run() (*Result, error) {
 	for k, day := range e.cal.days {
 		rate, err := e.fx.rate(day)
@@ -65,7 +63,9 @@ func (e *engine) run() (*Result, error) {
 		}
 		e.lastRate = rate
 
-		if !e.plan.Reinvest {
+		if e.plan.Reinvest {
+			e.reinvestDividends(k)
+		} else {
 			e.collectDividends(k, rate)
 		}
 		nav := e.nav(k, rate)
@@ -81,19 +81,26 @@ func (e *engine) run() (*Result, error) {
 	return e.result(), nil
 }
 
-// price returns the price shares are bought and valued at under the
-// plan's dividend model.
-func (e *engine) price(b market.Bar) float64 {
-	if e.plan.Reinvest {
-		return b.AdjClose
+// reinvestDividends buys more shares with every dividend paid on day k:
+// shares × Bar.Dividend is spent at that day's close, before the day's
+// contribution, so shares bought that day earn nothing — which is how an
+// ex-dividend date works. Buying at Close keeps the share count real,
+// unlike valuing with Bar.AdjClose, which is back-adjusted by dividends
+// paid after the range and so does not count shares anyone holds.
+func (e *engine) reinvestDividends(k int) {
+	for i := range e.plan.Allocations {
+		b := e.cal.bars[i][k]
+		if b.Dividend <= 0 || e.shares[i] <= 0 {
+			continue
+		}
+		e.shares[i] += e.shares[i] * b.Dividend / b.Close
 	}
-	return b.Close
 }
 
 // collectDividends credits shares × Bar.Dividend to cash for every symbol
 // paying a dividend on day k, converted at that day's rate. It runs before
-// the day's contribution, so shares bought on the pay date earn nothing,
-// matching how an ex-dividend date works.
+// the day's contribution, so shares bought on the ex-dividend date earn
+// nothing.
 func (e *engine) collectDividends(k int, rate float64) {
 	for i := range e.plan.Allocations {
 		div := e.cal.bars[i][k].Dividend
@@ -125,7 +132,7 @@ func (e *engine) nav(k int, rate float64) float64 {
 // contribute invests one contribution on day k. The fee comes off the
 // gross amount first, the net remainder is converted to USD at rate and
 // split by weight, and each symbol's share count grows by its slice
-// divided by that day's price.
+// divided by that day's close.
 func (e *engine) contribute(k int, day time.Time, rate, nav float64) {
 	gross := e.plan.Amount
 	fee := gross * e.plan.FeeRate
@@ -141,7 +148,7 @@ func (e *engine) contribute(k int, day time.Time, rate, nav float64) {
 	e.flows = append(e.flows, CashFlow{Date: day, Amount: -gross})
 
 	for i, a := range e.plan.Allocations {
-		e.shares[i] += netUSD * a.Weight / e.price(e.cal.bars[i][k])
+		e.shares[i] += netUSD * a.Weight / e.cal.bars[i][k].Close
 		e.investedBy[i] += gross * a.Weight
 	}
 }
@@ -150,7 +157,7 @@ func (e *engine) contribute(k int, day time.Time, rate, nav float64) {
 func (e *engine) holdingsUSD(k int) float64 {
 	total := 0.0
 	for i := range e.plan.Allocations {
-		total += e.shares[i] * e.price(e.cal.bars[i][k])
+		total += e.shares[i] * e.cal.bars[i][k].Close
 	}
 	return total
 }
@@ -184,9 +191,10 @@ func (e *engine) result() *Result {
 	e.flows = append(e.flows, CashFlow{Date: res.End, Amount: e.value})
 	rate, err := XIRR(e.flows)
 	if err != nil {
-		res.Notes = append(res.Notes, "annualized return not computed: "+err.Error())
+		res.Notes = append(res.Notes, annualizedUnavailableNote)
 	} else {
 		res.AnnualizedReturn = rate
+		res.AnnualizedReturnComputed = true
 	}
 
 	if e.fx.enabled() {
@@ -195,12 +203,16 @@ func (e *engine) result() *Result {
 	return res
 }
 
+// annualizedUnavailableNote explains a missing AnnualizedReturn in words a
+// reader can act on; the raw XIRR error is deliberately not exposed.
+const annualizedUnavailableNote = "annualized return not computed: the range is too short to annualise or no rate between -99.99% and +1000% per year fits the cash flows"
+
 // holdings reports the final position per symbol, valued at day k's close
 // and the last exchange rate.
 func (e *engine) holdings(k int) []Holding {
 	out := make([]Holding, len(e.plan.Allocations))
 	for i, a := range e.plan.Allocations {
-		value := e.shares[i] * e.price(e.cal.bars[i][k]) * e.lastRate
+		value := e.shares[i] * e.cal.bars[i][k].Close * e.lastRate
 		h := Holding{
 			Symbol:   a.Symbol,
 			Shares:   e.shares[i],

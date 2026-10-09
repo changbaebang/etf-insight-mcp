@@ -9,27 +9,45 @@ import (
 )
 
 // calendar is the trading calendar of a plan: the days on which every
-// allocated symbol has a bar, inside the requested range, in ascending
-// order, together with each symbol's bar on each day.
+// allocated symbol (and every Plan.CalendarSymbols symbol) has a bar,
+// inside the requested range, in ascending order, together with each
+// allocated symbol's bar on each day.
 type calendar struct {
 	days []time.Time
 	// bars[i][k] is the bar of allocation i on days[k].
 	bars [][]market.Bar
 }
 
-// buildCalendar intersects the series' trading days inside [p.Start, p.End]
-// and returns the notes describing how the range was adjusted.
+// named pairs a series with the symbol it was requested under, for notes.
+type named struct {
+	sym string
+	s   *market.Series
+}
+
+// buildCalendar intersects the trading days of the allocated series and
+// the extra calendar series inside [p.Start, p.End] and returns the notes
+// describing how the range was adjusted.
 //
-// A zero p.Start means the latest first bar of the series and a zero p.End
-// the earliest last bar. A p.Start earlier than some symbol's first bar
-// moves forward to that bar and a p.End later than some symbol's last bar
-// moves back to it; each move adds a note. A range with no history, or
-// one on which the series share no trading day, is an error.
-func buildCalendar(p Plan, series []*market.Series) (*calendar, []string, error) {
+// A zero p.Start means the latest first bar of all bounding series and a
+// zero p.End the earliest last bar. A p.Start earlier than some series'
+// first bar moves forward to that bar and a p.End later than some series'
+// last bar moves back to it; each move adds a note. fx, when non-nil, only
+// bounds the range (its first and last bar); its trading days are not
+// intersected because the converter falls back to the last rate before a
+// day. A range with no history, or one on which the series share no
+// trading day, is an error.
+func buildCalendar(p Plan, allocated, extra []named, fx *market.Series) (*calendar, []string, error) {
+	bounding := make([]named, 0, len(allocated)+len(extra)+1)
+	bounding = append(bounding, allocated...)
+	bounding = append(bounding, extra...)
+	if fx != nil {
+		bounding = append(bounding, named{sym: fxLabel, s: fx})
+	}
+
 	start, end := p.Start, p.End
 	var notes []string
 
-	latestFirst, firstSym := latestFirstBar(p.Allocations, series)
+	latestFirst, firstSym := latestFirstBar(bounding)
 	switch {
 	case start.IsZero():
 		start = latestFirst
@@ -39,7 +57,7 @@ func buildCalendar(p Plan, series []*market.Series) (*calendar, []string, error)
 		start = latestFirst
 	}
 
-	earliestLast, lastSym := earliestLastBar(p.Allocations, series)
+	earliestLast, lastSym := earliestLastBar(bounding)
 	switch {
 	case end.IsZero():
 		end = earliestLast
@@ -54,25 +72,36 @@ func buildCalendar(p Plan, series []*market.Series) (*calendar, []string, error)
 			formatDate(start), formatDate(end))
 	}
 
-	cal := intersect(series, start, end)
+	cal := intersect(allocated, extra, start, end)
 	if len(cal.days) == 0 {
 		return nil, nil, fmt.Errorf("sim: no trading day shared by %s between %s and %s",
-			symbolList(p.Allocations), formatDate(start), formatDate(end))
+			symbolList(append(append([]named{}, allocated...), extra...)), formatDate(start), formatDate(end))
+	}
+	if note, ok := midPeriodStartNote(p.Cadence, allocated[0].s, cal.days[0]); ok {
+		notes = append(notes, note)
 	}
 	return cal, notes, nil
 }
 
+// fxLabel names the exchange-rate series in notes.
+const fxLabel = "KRW=X exchange-rate"
+
 // intersect returns the calendar of days inside [start, end] on which
-// every series has a bar.
-func intersect(series []*market.Series, start, end time.Time) *calendar {
-	// The first series drives the walk; the others are indexed by date.
-	base := series[0].Between(start, end)
-	others := make([]map[time.Time]market.Bar, 0, len(series)-1)
-	for _, s := range series[1:] {
-		others = append(others, barsByDate(s.Between(start, end)))
+// every allocated and every extra series has a bar. Bars are kept for the
+// allocated series only.
+func intersect(allocated, extra []named, start, end time.Time) *calendar {
+	// The first allocated series drives the walk; the rest are indexed by
+	// date.
+	base := allocated[0].s.Between(start, end)
+	others := make([]map[time.Time]market.Bar, 0, len(allocated)-1+len(extra))
+	for _, n := range allocated[1:] {
+		others = append(others, barsByDate(n.s.Between(start, end)))
+	}
+	for _, n := range extra {
+		others = append(others, barsByDate(n.s.Between(start, end)))
 	}
 
-	cal := &calendar{bars: make([][]market.Bar, len(series))}
+	cal := &calendar{bars: make([][]market.Bar, len(allocated))}
 	for _, b := range base {
 		day := market.Day(b.Date)
 		dayBars, ok := barsOn(day, b, others)
@@ -80,8 +109,8 @@ func intersect(series []*market.Series, start, end time.Time) *calendar {
 			continue
 		}
 		cal.days = append(cal.days, day)
-		for i, db := range dayBars {
-			cal.bars[i] = append(cal.bars[i], db)
+		for i := range allocated {
+			cal.bars[i] = append(cal.bars[i], dayBars[i])
 		}
 	}
 	return cal
@@ -114,13 +143,13 @@ func barsOn(day time.Time, first market.Bar, others []map[time.Time]market.Bar) 
 
 // latestFirstBar returns the latest date on which a series begins and the
 // symbol of that series.
-func latestFirstBar(allocs []Allocation, series []*market.Series) (time.Time, string) {
+func latestFirstBar(series []named) (time.Time, string) {
 	var latest time.Time
 	var sym string
-	for i, s := range series {
-		first, _ := s.First() // lookupSeries guarantees at least one bar
+	for _, n := range series {
+		first, _ := n.s.First() // validated to have at least one bar
 		if sym == "" || first.Date.After(latest) {
-			latest, sym = market.Day(first.Date), allocs[i].Symbol
+			latest, sym = market.Day(first.Date), n.sym
 		}
 	}
 	return latest, sym
@@ -128,23 +157,23 @@ func latestFirstBar(allocs []Allocation, series []*market.Series) (time.Time, st
 
 // earliestLastBar returns the earliest date on which a series ends and the
 // symbol of that series.
-func earliestLastBar(allocs []Allocation, series []*market.Series) (time.Time, string) {
+func earliestLastBar(series []named) (time.Time, string) {
 	var earliest time.Time
 	var sym string
-	for i, s := range series {
-		last, _ := s.Last() // lookupSeries guarantees at least one bar
+	for _, n := range series {
+		last, _ := n.s.Last() // validated to have at least one bar
 		if sym == "" || last.Date.Before(earliest) {
-			earliest, sym = market.Day(last.Date), allocs[i].Symbol
+			earliest, sym = market.Day(last.Date), n.sym
 		}
 	}
 	return earliest, sym
 }
 
-// symbolList renders the allocated symbols as "A, B, C".
-func symbolList(allocs []Allocation) string {
-	syms := make([]string, len(allocs))
-	for i, a := range allocs {
-		syms[i] = a.Symbol
+// symbolList renders symbols as "A, B, C".
+func symbolList(series []named) string {
+	syms := make([]string, len(series))
+	for i, n := range series {
+		syms[i] = n.sym
 	}
 	return strings.Join(syms, ", ")
 }
@@ -174,6 +203,47 @@ func startsNewPeriod(c Cadence, prev, cur time.Time) bool {
 	default: // Daily
 		return true
 	}
+}
+
+// midPeriodStartNote explains, for weekly and monthly plans, that a first
+// contribution falling in the middle of its week or month is followed by
+// another on the first trading day of the next period. The previous bar of
+// the base series decides whether the start is mid-period; when the series
+// begins on the start day itself the calendar date is used instead (a
+// Monday or the first weekday of the month counts as a period start).
+func midPeriodStartNote(c Cadence, base *market.Series, start time.Time) (string, bool) {
+	if c == Daily {
+		return "", false
+	}
+	mid := false
+	if i, ok := base.IndexOn(start); ok && i > 0 && base.Bars[i].Date.Equal(start) {
+		mid = !startsNewPeriod(c, market.Day(base.Bars[i-1].Date), start)
+	} else {
+		mid = !firstWeekdayOfPeriod(c, start)
+	}
+	if !mid {
+		return "", false
+	}
+	period := "month"
+	if c == Weekly {
+		period = "week"
+	}
+	return fmt.Sprintf("first contribution on %s falls mid-%s; later contributions are on the first trading day of each following %s",
+		formatDate(start), period, period), true
+}
+
+// firstWeekdayOfPeriod reports whether d is the first weekday of its ISO
+// week (Monday) or calendar month, judged by the calendar alone.
+func firstWeekdayOfPeriod(c Cadence, d time.Time) bool {
+	if c == Weekly {
+		return d.Weekday() == time.Monday
+	}
+	for day := d.AddDate(0, 0, -1); day.Month() == d.Month(); day = day.AddDate(0, 0, -1) {
+		if wd := day.Weekday(); wd != time.Saturday && wd != time.Sunday {
+			return false
+		}
+	}
+	return true
 }
 
 // isLastOfMonth reports whether days[k] is the last trading day of its
