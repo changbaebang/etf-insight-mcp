@@ -713,3 +713,25 @@ func TestRunDoesNotModifyInputs(t *testing.T) {
 		t.Errorf("Run modified the plan: %+v", p)
 	}
 }
+
+func TestRunFixedFee(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 5, constant(100))
+	p := singlePlan("SPY", Daily, 5)
+	p.FeeRate, p.FeeFixed = 0.01, 0.99
+	res := mustRun(t, p, seriesInput(spy))
+
+	// Each 5 USD contribution loses 0.05 + 0.99 = 1.04; 3.96 buys 0.0396 shares.
+	requireFloat(t, "Fees", res.Fees, 5*1.04, tight)
+	requireFloat(t, "Invested", res.Invested, 25, tight)
+	requireFloat(t, "Holdings[0].Shares", res.Holdings[0].Shares, 5*0.0396, tight)
+	requireFloat(t, "FinalValue", res.FinalValue, 5*3.96, tight)
+
+	p.FeeFixed = 4.95 // 5 × 0.99 = 4.95 is exactly the net amount
+	if _, err := Run(p, seriesInput(spy)); err == nil || !strings.Contains(err.Error(), "leaves nothing") {
+		t.Errorf("fixed fee consuming the contribution: err = %v", err)
+	}
+	p.FeeFixed = -1
+	if _, err := Run(p, seriesInput(spy)); err == nil || !strings.Contains(err.Error(), "fixed fee must be >= 0") {
+		t.Errorf("negative fixed fee: err = %v", err)
+	}
+}

@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -87,9 +89,23 @@ func Register(s *mcp.Server, deps Deps) {
 const prefetchConcurrency = 4
 
 // readOnly builds the annotations shared by every tool: none of them
-// changes anything, they only read prices and compute.
-func readOnly(title string) *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{ReadOnlyHint: true, Title: title}
+// changes anything, they only read prices and compute. openWorld says
+// whether the tool talks to an external system (the price source); ping
+// and list_etfs do not.
+func readOnly(title string, openWorld bool) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{ReadOnlyHint: true, Title: title, OpenWorldHint: &openWorld}
+}
+
+// checkFinite rejects results that overflowed to ±Inf or NaN before the
+// SDK tries to marshal them, which would otherwise surface as a protocol
+// error instead of a tool error.
+func checkFinite(what string, values ...float64) error {
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("%s is not a finite number; reduce amount, horizon or expected_annual_return_pct", what)
+		}
+	}
+	return nil
 }
 
 // clock returns the current time, tolerating a Deps built without Now.
@@ -181,15 +197,31 @@ func describeFetchError(sym string, err error) error {
 	switch {
 	case errors.Is(err, market.ErrNotFound):
 		if _, known := universe.Get(sym); known {
-			return fmt.Errorf("symbol %s is in the universe but the data source returned not found; try again later: %w", sym, err)
+			return fmt.Errorf("symbol %s is in the universe but the data source returned not found; the ticker may have changed or been delisted, try search_symbols or another symbol", sym)
 		}
 		return fmt.Errorf("unknown symbol %s: not in universe and the data source returned not found; use list_etfs", sym)
 	case errors.Is(err, cache.ErrInvalidSymbol):
 		return fmt.Errorf("invalid symbol %q: use letters, digits and . - = ^ only, or find one with list_etfs", sym)
 	default:
-		return fmt.Errorf("fetching %s failed: %w", sym, err)
+		return fmt.Errorf("fetching %s failed: %s", sym, rootCause(err))
 	}
 }
+
+// rootCause renders an upstream error for a reader: the request URL and
+// the repeated symbol prefixes are dropped, the cause is kept.
+func rootCause(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err.Error()
+	}
+	msg := err.Error()
+	msg = fetchPrefix.ReplaceAllString(msg, "")
+	return msg
+}
+
+// fetchPrefix matches the "cache: fetch X: yahoo: X: request: " chain the
+// data layers prepend.
+var fetchPrefix = regexp.MustCompile(`^(cache: fetch \S+: )?(yahoo: \S+: )?(request: )?`)
 
 // fetchAll loads every symbol, warming the cache concurrently when there
 // is one so a portfolio does not pay one network round trip per symbol.
@@ -197,17 +229,25 @@ func describeFetchError(sym string, err error) error {
 // symbol that did not; callers decide which failures are fatal.
 func (d Deps) fetchAll(ctx context.Context, symbols []string) (map[string]*market.Series, map[string]error) {
 	syms := uniqueSymbols(symbols)
-	var failed map[string]error
-	if d.Cache != nil && len(syms) > 1 {
-		failed = cache.Prefetch(ctx, d.Source, syms, prefetchConcurrency)
-	}
 	series := make(map[string]*market.Series, len(syms))
 	errs := make(map[string]error)
-	for _, sym := range syms {
-		if err, ok := failed[sym]; ok {
-			errs[sym] = describeFetchError(sym, err)
-			continue
+	if d.Cache != nil && len(syms) > 1 {
+		// One concurrent pass; the series come back from the same call so a
+		// symbol that could not be written to disk is not fetched twice.
+		got, failed := d.Cache.Prefetch(ctx, syms, prefetchConcurrency)
+		for _, sym := range syms {
+			switch {
+			case failed[sym] != nil:
+				errs[sym] = describeFetchError(sym, failed[sym])
+			case got[sym] == nil || got[sym].Len() == 0:
+				errs[sym] = fmt.Errorf("%s has no price history in the data source", sym)
+			default:
+				series[sym] = got[sym]
+			}
 		}
+		return series, errs
+	}
+	for _, sym := range syms {
 		s, err := d.fetchSeries(ctx, sym)
 		if err != nil {
 			errs[sym] = err
@@ -234,17 +274,19 @@ func uniqueSymbols(symbols []string) []string {
 	return out
 }
 
-// staleWarning reports when the cache served sym although its last
-// upstream fetch did not fully succeed (stale file served, or the fresh
-// series could not be written), so a reader knows the numbers may lag.
-// It is empty without a cache or after a clean fetch.
-func (d Deps) staleWarning(sym string) string {
+// staleWarnings reports, for sym, whether the cache served a stale file
+// after an upstream failure and whether fresh data could not be cached.
+// Both are empty without a cache or after a clean, persisted fetch.
+func (d Deps) staleWarnings(sym string) []string {
 	if d.Cache == nil {
-		return ""
+		return nil
 	}
-	err := d.Cache.LastError(sym)
-	if err == nil {
-		return ""
+	var out []string
+	if err := d.Cache.LastError(sym); err != nil {
+		out = append(out, fmt.Sprintf("%s may be stale: served from the cached file because the last fetch failed (%s)", sym, rootCause(err)))
 	}
-	return fmt.Sprintf("%s may be stale: the last fetch from the data source did not fully succeed (%v)", sym, err)
+	if err := d.Cache.LastWriteError(sym); err != nil {
+		out = append(out, fmt.Sprintf("%s is current but could not be cached (%s); every call refetches it until the cache directory is writable", sym, rootCause(err)))
+	}
+	return out
 }

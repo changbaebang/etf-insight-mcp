@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/changbaebang/etf-insight-mcp/internal/sim"
 )
@@ -22,12 +23,13 @@ const fxSymbol = "KRW=X"
 type planInput struct {
 	Amount            float64 `json:"amount" jsonschema:"size of one contribution in currency before fees, e.g. 100 (USD) or 10000 (KRW); must be > 0"`
 	Currency          string  `json:"currency,omitempty" jsonschema:"USD or KRW (default USD); with KRW each contribution is converted at that day's KRW=X rate and every money field is reported in KRW"`
-	Cadence           string  `json:"cadence,omitempty" jsonschema:"daily (every trading day), weekly (first trading day of each ISO week) or monthly (first trading day of each calendar month); default daily"`
+	Cadence           string  `json:"cadence,omitempty" jsonschema:"daily (every trading day), weekly or monthly; default daily. The start date itself always contributes; later weekly/monthly contributions fall on the first trading day of each following ISO week / calendar month (a mid-period start is noted)"`
 	Start             string  `json:"start" jsonschema:"first contribution date YYYY-MM-DD; moved forward with a note when the history starts later"`
 	End               string  `json:"end,omitempty" jsonschema:"last valuation date YYYY-MM-DD, inclusive (default: the latest bar)"`
 	FeeRate           float64 `json:"fee_rate,omitempty" jsonschema:"fraction of each contribution lost to commissions, e.g. 0.001 for 0.1% (default 0)"`
-	ReinvestDividends *bool   `json:"reinvest_dividends,omitempty" jsonschema:"true (default) values shares at the dividend-adjusted close, i.e. dividends reinvested on the pay date; false buys at the raw close and keeps dividends as uninvested cash (cash_dividends)"`
-	CompareWith       *string `json:"compare_with,omitempty" jsonschema:"symbol of a baseline run with the same plan over the same realised date range (default SPY); pass an empty string to skip the baseline"`
+	ReinvestDividends *bool   `json:"reinvest_dividends,omitempty" jsonschema:"true (default): every dividend buys more shares at the ex-dividend date's close; false: dividends accumulate as uninvested cash (cash_dividends). Shares are always real share counts bought at the close"`
+	CompareWith       *string `json:"compare_with,omitempty" jsonschema:"symbol of a baseline (default SPY) run with the same plan on exactly the days both it and the plan's symbols traded; see comparison. Pass an empty string to skip the baseline"`
+	CommissionFixed   float64 `json:"commission_fixed,omitempty" jsonschema:"fixed commission per contribution in the plan currency, e.g. 0.99 (default 0); applied after fee_rate and must leave something to invest. For small daily purchases this is usually the dominant cost"`
 }
 
 // allocationInput is one line of a portfolio.
@@ -73,12 +75,13 @@ type simResultOutput struct {
 	End                 string          `json:"end"`
 	Contributions       int             `json:"contributions"`
 	Invested            float64         `json:"invested"`
-	Fees                float64         `json:"fees"`
+	Fees                float64         `json:"fees" jsonschema:"total commissions (fee_rate plus commission_fixed), in the plan currency"`
+	CostRatioPct        float64         `json:"cost_ratio_pct" jsonschema:"fees as a percentage of invested"`
 	FinalValue          float64         `json:"final_value"`
-	Profit              float64         `json:"profit"`
+	Profit              float64         `json:"profit" jsonschema:"final_value minus invested"`
 	ReturnPct           float64         `json:"return_pct"`
-	AnnualizedReturnPct float64         `json:"annualized_return_pct"`
-	MaxDrawdownPct      float64         `json:"max_drawdown_pct"`
+	AnnualizedReturnPct *float64        `json:"annualized_return_pct,omitempty" jsonschema:"money-weighted annual rate (XIRR); omitted when the range is shorter than a year or no rate fits, see notes"`
+	MaxDrawdownPct      float64         `json:"max_drawdown_pct" jsonschema:"largest peak-to-trough fall of the unitised value path, contributions excluded"`
 	CashDividends       float64         `json:"cash_dividends"`
 	Holdings            []holdingOutput `json:"holdings"`
 	Timeline            []pointOutput   `json:"timeline"`
@@ -86,17 +89,48 @@ type simResultOutput struct {
 	Notes               []string        `json:"notes,omitempty"`
 }
 
-// baselineOutput is the comparison run.
-type baselineOutput struct {
-	Symbol string `json:"symbol"`
-	simResultOutput
+// headlineOutput is the summary of one simulation leg without holdings
+// or timeline; the comparison block uses it for both legs.
+type headlineOutput struct {
+	Start               string   `json:"start"`
+	End                 string   `json:"end"`
+	Contributions       int      `json:"contributions"`
+	Invested            float64  `json:"invested"`
+	Fees                float64  `json:"fees"`
+	FinalValue          float64  `json:"final_value"`
+	Profit              float64  `json:"profit"`
+	ReturnPct           float64  `json:"return_pct"`
+	AnnualizedReturnPct *float64 `json:"annualized_return_pct,omitempty"`
+	MaxDrawdownPct      float64  `json:"max_drawdown_pct"`
+	Notes               []string `json:"notes,omitempty"`
 }
 
-// diffOutput is plan minus baseline.
+// baselineOutput is the comparison leg run on compare_with.
+type baselineOutput struct {
+	Symbol string `json:"symbol"`
+	headlineOutput
+}
+
+// diffOutput is plan minus baseline, computed from the rounded figures so
+// it reconciles with the numbers shown.
 type diffOutput struct {
-	FinalValue          float64 `json:"final_value"`
-	ReturnPct           float64 `json:"return_pct"`
-	AnnualizedReturnPct float64 `json:"annualized_return_pct"`
+	FinalValue          float64  `json:"final_value"`
+	ReturnPct           float64  `json:"return_pct"`
+	AnnualizedReturnPct *float64 `json:"annualized_return_pct,omitempty" jsonschema:"omitted when either leg has no annualized return"`
+}
+
+// comparisonOutput puts the plan and the baseline side by side on exactly
+// the same contribution days, so the difference is about the funds and
+// not about the dates.
+type comparisonOutput struct {
+	Start          string         `json:"start"`
+	End            string         `json:"end"`
+	Contributions  int            `json:"contributions"`
+	SameDaysAsPlan bool           `json:"same_days_as_plan" jsonschema:"true when the comparison covers exactly the plan's own contribution days; false when the baseline's history or holidays cut the range, in which case plan is the plan re-run on the common days"`
+	Plan           headlineOutput `json:"plan" jsonschema:"the plan run on the comparison days (identical to the main result when same_days_as_plan is true)"`
+	Baseline       baselineOutput `json:"baseline"`
+	Diff           diffOutput     `json:"diff" jsonschema:"plan minus baseline over the comparison days"`
+	Note           string         `json:"note,omitempty"`
 }
 
 // toPlan validates the shared fields, applies the defaults and returns
@@ -128,6 +162,9 @@ func (in planInput) toPlan(allocs []sim.Allocation) (plan sim.Plan, baseline str
 	if err := checkFeeRate(in.FeeRate); err != nil {
 		return sim.Plan{}, "", err
 	}
+	if err := checkFixedCommission(in.CommissionFixed, in.Amount, in.FeeRate); err != nil {
+		return sim.Plan{}, "", err
+	}
 
 	baseline = defaultBaseline
 	if in.CompareWith != nil {
@@ -141,9 +178,47 @@ func (in planInput) toPlan(allocs []sim.Allocation) (plan sim.Plan, baseline str
 		Start:       start,
 		End:         end,
 		FeeRate:     in.FeeRate,
+		FeeFixed:    in.CommissionFixed,
 		Reinvest:    in.ReinvestDividends == nil || *in.ReinvestDividends,
 	}
 	return plan, baseline, nil
+}
+
+// maxAmount bounds a contribution so that totals stay finite and
+// representable; nobody contributes a trillion per purchase.
+const maxAmount = 1e12
+
+// checkFixedCommission rejects a negative fixed commission or one that
+// consumes the whole contribution.
+func checkFixedCommission(fixed, amount, feeRate float64) error {
+	if math.IsNaN(fixed) || fixed < 0 || math.IsInf(fixed, 0) {
+		return fmt.Errorf("commission_fixed must be >= 0, got %v", fixed)
+	}
+	if fixed > 0 && fixed >= amount*(1-feeRate) {
+		return fmt.Errorf("commission_fixed %v leaves nothing of a %v contribution to invest", fixed, amount)
+	}
+	return nil
+}
+
+// minAnnualizedSpan is the shortest realised range that gets an
+// annualized return: about a year. A plan over one calendar year
+// realises roughly 361 days once weekends and holidays trim its ends, so
+// the bar sits a little below 365.
+const minAnnualizedSpan = 360 * 24 * time.Hour
+
+// annualizedPct returns the annualized return for the wire, or nil when
+// the engine could not fit one or the range is shorter than about a year,
+// in which case an annual rate would be an extrapolation (get_etf_info
+// applies the same policy to its return windows). The second value is a
+// note explaining a nil for the short-range case.
+func annualizedPct(res *sim.Result) (*float64, string) {
+	if !res.AnnualizedReturnComputed {
+		return nil, ""
+	}
+	if res.End.Sub(res.Start) < minAnnualizedSpan {
+		return nil, "annualized_return_pct omitted: the range is shorter than a year, so an annual rate would be an extrapolation"
+	}
+	return ptr(pct(res.AnnualizedReturn)), ""
 }
 
 // parseCurrency validates the plan currency, defaulting to USD.
@@ -170,10 +245,13 @@ func parseCadence(s string) (sim.Cadence, error) {
 	return c, nil
 }
 
-// checkAmount rejects a non-positive contribution.
+// checkAmount rejects a non-positive or absurdly large contribution.
 func checkAmount(amount float64) error {
-	if amount <= 0 || math.IsInf(amount, 0) {
+	if amount <= 0 || math.IsInf(amount, 0) || math.IsNaN(amount) {
 		return fmt.Errorf("amount must be > 0, got %v", amount)
+	}
+	if amount > maxAmount {
+		return fmt.Errorf("amount must be at most %g, got %v", maxAmount, amount)
 	}
 	return nil
 }
@@ -231,23 +309,25 @@ func toAllocationOutputs(allocs []sim.Allocation) []allocationOutput {
 }
 
 // simulation is one sim.Run mapped to the wire shape, with the optional
-// baseline and the difference between the two.
+// side-by-side comparison against the baseline.
 type simulation struct {
-	result   simResultOutput
-	baseline *baselineOutput
-	diff     *diffOutput
+	result     simResultOutput
+	comparison *comparisonOutput
 }
 
-// simulate fetches every series the plan needs, runs it, then runs the
-// baseline symbol with the same plan over the realised date range so both
-// cover exactly the same days. A baseline that cannot be computed is
-// reported in notes rather than failing the call; a missing plan symbol
-// or exchange rate is an error.
+// simulate fetches every series the plan needs and runs it. When a
+// baseline is requested, both the plan and the baseline are then run once
+// more with each other's symbols as calendar symbols, so the two legs
+// contribute on exactly the same days (the intersection of all their
+// trading days, bounded by the shortest history). A baseline that cannot
+// be computed is reported in notes rather than failing the call; a
+// missing plan symbol or exchange rate is an error.
 func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (simulation, error) {
-	symbols := make([]string, 0, len(plan.Allocations)+2)
+	planSymbols := make([]string, 0, len(plan.Allocations))
 	for _, a := range plan.Allocations {
-		symbols = append(symbols, a.Symbol)
+		planSymbols = append(planSymbols, a.Symbol)
 	}
+	symbols := append([]string(nil), planSymbols...)
 	krw := plan.Currency == sim.CurrencyKRW
 	if krw {
 		symbols = append(symbols, fxSymbol)
@@ -256,8 +336,8 @@ func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (sim
 		symbols = append(symbols, baseline)
 	}
 	series, errs := d.fetchAll(ctx, symbols)
-	for _, a := range plan.Allocations {
-		if err := errs[a.Symbol]; err != nil {
+	for _, sym := range planSymbols {
+		if err := errs[sym]; err != nil {
 			return simulation{}, err
 		}
 	}
@@ -270,6 +350,9 @@ func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (sim
 	if err != nil {
 		return simulation{}, userError(err)
 	}
+	if err := checkFinite("result", res.Invested, res.FinalValue, res.Profit); err != nil {
+		return simulation{}, err
+	}
 	out := simulation{result: d.toSimResult(res, plan)}
 
 	switch {
@@ -279,43 +362,107 @@ func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (sim
 	case errs[baseline] != nil:
 		out.result.Notes = append(out.result.Notes, fmt.Sprintf("baseline %s not computed: %v", baseline, errs[baseline]))
 	default:
-		bp := plan
-		bp.Allocations = []sim.Allocation{{Symbol: baseline, Weight: 1}}
-		bp.Start, bp.End = res.Start, res.End
-		bres, err := sim.Run(bp, in)
+		cmp, err := d.compare(plan, baseline, planSymbols, in, res)
 		if err != nil {
 			out.result.Notes = append(out.result.Notes, fmt.Sprintf("baseline %s not computed: %v", baseline, userError(err)))
 			break
 		}
-		out.baseline = &baselineOutput{Symbol: baseline, simResultOutput: d.toSimResult(bres, bp)}
-		out.diff = &diffOutput{
-			FinalValue:          round2(res.FinalValue - bres.FinalValue),
-			ReturnPct:           round2(res.ReturnPct - bres.ReturnPct),
-			AnnualizedReturnPct: pct(res.AnnualizedReturn - bres.AnnualizedReturn),
-		}
+		out.comparison = cmp
 	}
 	return out, nil
+}
+
+// compare runs the plan and the baseline on their common calendar and
+// reports both legs with their difference. res is the plan's own result,
+// used to tell whether the common calendar changed anything.
+func (d Deps) compare(plan sim.Plan, baseline string, planSymbols []string, in sim.Input, res *sim.Result) (*comparisonOutput, error) {
+	common := plan
+	common.CalendarSymbols = append(append([]string(nil), plan.CalendarSymbols...), baseline)
+	cres, err := sim.Run(common, in)
+	if err != nil {
+		return nil, err
+	}
+	bp := plan
+	bp.Allocations = []sim.Allocation{{Symbol: baseline, Weight: 1}}
+	bp.CalendarSymbols = append(append([]string(nil), plan.CalendarSymbols...), planSymbols...)
+	bres, err := sim.Run(bp, in)
+	if err != nil {
+		return nil, err
+	}
+	if bres.Contributions != cres.Contributions || !bres.Start.Equal(cres.Start) || !bres.End.Equal(cres.End) {
+		return nil, fmt.Errorf("the two legs did not land on the same days (%d vs %d contributions)", cres.Contributions, bres.Contributions)
+	}
+
+	planLeg := toHeadline(cres)
+	baseLeg := toHeadline(bres)
+	cmp := &comparisonOutput{
+		Start:          planLeg.Start,
+		End:            planLeg.End,
+		Contributions:  cres.Contributions,
+		SameDaysAsPlan: cres.Contributions == res.Contributions && cres.Start.Equal(res.Start) && cres.End.Equal(res.End),
+		Plan:           planLeg,
+		Baseline:       baselineOutput{Symbol: baseline, headlineOutput: baseLeg},
+		Diff: diffOutput{
+			FinalValue: round2(planLeg.FinalValue - baseLeg.FinalValue),
+			ReturnPct:  round2(planLeg.ReturnPct - baseLeg.ReturnPct),
+		},
+	}
+	if planLeg.AnnualizedReturnPct != nil && baseLeg.AnnualizedReturnPct != nil {
+		cmp.Diff.AnnualizedReturnPct = ptr(round2(*planLeg.AnnualizedReturnPct - *baseLeg.AnnualizedReturnPct))
+	}
+	if !cmp.SameDaysAsPlan {
+		cmp.Note = fmt.Sprintf("comparison covers %s to %s (%d contributions), the days on which %s and %s all traded; the plan on its own covers %s to %s (%d contributions), so compare comparison.plan with comparison.baseline, not the main result",
+			cmp.Start, cmp.End, cres.Contributions, strings.Join(planSymbols, ", "), baseline,
+			formatDate(res.Start), formatDate(res.End), res.Contributions)
+	}
+	return cmp, nil
+}
+
+// toHeadline maps the summary figures of a result to the wire shape.
+func toHeadline(res *sim.Result) headlineOutput {
+	h := headlineOutput{
+		Start:          formatDate(res.Start),
+		End:            formatDate(res.End),
+		Contributions:  res.Contributions,
+		Invested:       round2(res.Invested),
+		Fees:           round2(res.Fees),
+		FinalValue:     round2(res.FinalValue),
+		ReturnPct:      round2(res.ReturnPct),
+		MaxDrawdownPct: round2(res.MaxDrawdownPct),
+		Notes:          append([]string(nil), res.Notes...),
+	}
+	h.Profit = round2(h.FinalValue - h.Invested)
+	var note string
+	h.AnnualizedReturnPct, note = annualizedPct(res)
+	if note != "" {
+		h.Notes = append(h.Notes, note)
+	}
+	return h
 }
 
 // toSimResult maps a sim.Result to the wire shape, rounding money to
 // cents and shares to four decimals, and appends a note for every symbol
 // the cache served stale.
 func (d Deps) toSimResult(res *sim.Result, plan sim.Plan) simResultOutput {
+	head := toHeadline(res)
 	out := simResultOutput{
-		Start:               formatDate(res.Start),
-		End:                 formatDate(res.End),
-		Contributions:       res.Contributions,
-		Invested:            round2(res.Invested),
-		Fees:                round2(res.Fees),
-		FinalValue:          round2(res.FinalValue),
-		Profit:              round2(res.Profit),
-		ReturnPct:           round2(res.ReturnPct),
-		AnnualizedReturnPct: pct(res.AnnualizedReturn),
-		MaxDrawdownPct:      round2(res.MaxDrawdownPct),
+		Start:               head.Start,
+		End:                 head.End,
+		Contributions:       head.Contributions,
+		Invested:            head.Invested,
+		Fees:                head.Fees,
+		FinalValue:          head.FinalValue,
+		Profit:              head.Profit,
+		ReturnPct:           head.ReturnPct,
+		AnnualizedReturnPct: head.AnnualizedReturnPct,
+		MaxDrawdownPct:      head.MaxDrawdownPct,
 		CashDividends:       round2(res.CashDividends),
 		Holdings:            make([]holdingOutput, 0, len(res.Holdings)),
 		Timeline:            make([]pointOutput, 0, len(res.Timeline)),
-		Notes:               append([]string(nil), res.Notes...),
+		Notes:               head.Notes,
+	}
+	if res.Invested > 0 {
+		out.CostRatioPct = pct(res.Fees / res.Invested)
 	}
 	for _, h := range res.Holdings {
 		out.Holdings = append(out.Holdings, holdingOutput{
@@ -342,14 +489,10 @@ func (d Deps) toSimResult(res *sim.Result, plan sim.Plan) simResultOutput {
 		}
 	}
 	for _, a := range plan.Allocations {
-		if w := d.staleWarning(a.Symbol); w != "" {
-			out.Notes = append(out.Notes, w)
-		}
+		out.Notes = append(out.Notes, d.staleWarnings(a.Symbol)...)
 	}
 	if plan.Currency == sim.CurrencyKRW {
-		if w := d.staleWarning(fxSymbol); w != "" {
-			out.Notes = append(out.Notes, w)
-		}
+		out.Notes = append(out.Notes, d.staleWarnings(fxSymbol)...)
 	}
 	return out
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -85,5 +86,23 @@ func TestServerRoundTrip(t *testing.T) {
 	}
 	if info.IsError {
 		t.Fatalf("get_etf_info returned tool error: %+v", info.Content)
+	}
+}
+
+func TestCheckCacheDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := checkCacheDir(dir + "/nested/cache"); err != nil {
+		t.Fatalf("checkCacheDir should create a nested directory: %v", err)
+	}
+	entries, err := os.ReadDir(dir + "/nested/cache")
+	if err != nil || len(entries) != 0 {
+		t.Errorf("probe file left behind: entries=%v err=%v", entries, err)
+	}
+	blocked := dir + "/file"
+	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkCacheDir(blocked); err == nil {
+		t.Error("a regular file must not pass as a cache directory")
 	}
 }

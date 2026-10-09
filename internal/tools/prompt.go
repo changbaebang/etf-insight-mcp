@@ -2,11 +2,11 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -33,25 +33,31 @@ func registerDCAReportPrompt(s *mcp.Server, d Deps) {
 	})
 }
 
+// invalidParams is the JSON-RPC error the MCP spec prescribes for bad
+// prompt arguments (-32602), so clients can classify it.
+func invalidParams(msg string) error {
+	return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: msg}
+}
+
 // dcaReport validates the prompt arguments and builds the instructions
 // for the model.
 func (d Deps) dcaReport(args map[string]string) (*mcp.GetPromptResult, error) {
 	symbol := normalizeSymbol(args["symbol"])
 	if symbol == "" {
-		return nil, errors.New("dca_report: symbol is required")
+		return nil, invalidParams("dca_report: symbol is required")
 	}
 	amountText := strings.TrimSpace(args["amount"])
 	amount, err := strconv.ParseFloat(amountText, 64)
 	if err != nil || amount <= 0 {
-		return nil, fmt.Errorf("dca_report: amount must be a positive number, got %q", amountText)
+		return nil, invalidParams(fmt.Sprintf("dca_report: amount must be a positive number, got %q", amountText))
 	}
 	currency, err := parseCurrency(args["currency"])
 	if err != nil {
-		return nil, fmt.Errorf("dca_report: %w", err)
+		return nil, invalidParams("dca_report: " + err.Error())
 	}
 	start, err := parseOptionalDate("start", args["start"])
 	if err != nil {
-		return nil, fmt.Errorf("dca_report: %w", err)
+		return nil, invalidParams("dca_report: " + err.Error())
 	}
 	if start.IsZero() {
 		start = d.clock().AddDate(-3, 0, 0)

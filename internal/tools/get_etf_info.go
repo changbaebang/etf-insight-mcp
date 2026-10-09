@@ -2,10 +2,12 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/changbaebang/etf-insight-mcp/internal/analytics"
+	"github.com/changbaebang/etf-insight-mcp/internal/market"
 	"github.com/changbaebang/etf-insight-mcp/internal/universe"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -37,11 +39,11 @@ type dataRangeOutput struct {
 
 // windowOutput is one trailing-return window of analytics.Summary.
 type windowOutput struct {
-	Label          string  `json:"label"`
-	TotalReturnPct float64 `json:"total_return_pct"`
-	AnnualizedPct  float64 `json:"annualized_pct"`
-	From           string  `json:"from"`
-	Available      bool    `json:"available"`
+	Label          string   `json:"label" jsonschema:"1m, 3m, 6m, 1y, 3y, 5y, 10y or max"`
+	TotalReturnPct float64  `json:"total_return_pct" jsonschema:"total return over the window with dividends reinvested"`
+	AnnualizedPct  *float64 `json:"annualized_pct,omitempty" jsonschema:"compound annual growth rate; only present for windows of at least one year, shorter windows are not extrapolated"`
+	From           string   `json:"from"`
+	Available      bool     `json:"available" jsonschema:"false when the history does not reach back far enough; the other fields are then zero"`
 }
 
 // summaryOutput is analytics.Summary on the wire.
@@ -67,12 +69,12 @@ type trendOutput struct {
 	SMA200           float64  `json:"sma_200"`
 	PctVsSMA50       float64  `json:"pct_vs_sma_50"`
 	PctVsSMA200      float64  `json:"pct_vs_sma_200"`
-	Momentum121Pct   float64  `json:"momentum_12_1_pct"`
-	Return6MPct      float64  `json:"return_6m_pct"`
+	Momentum121Pct   float64  `json:"momentum_12_1_pct" jsonschema:"return from 12 months ago to 1 month ago; 0 when fewer than 253 bars exist (then named in reasons)"`
+	Return6MPct      float64  `json:"return_6m_pct" jsonschema:"return over the last 126 bars; 0 when the history is shorter (then named in reasons)"`
 	Volatility20DPct float64  `json:"volatility_20d_pct"`
 	Volatility1YPct  float64  `json:"volatility_1y_pct"`
-	SMA200SlopePct   float64  `json:"sma_200_slope_pct"`
-	State            string   `json:"state"`
+	SMA200SlopePct   float64  `json:"sma_200_slope_pct" jsonschema:"change of the 200-day average over the last 20 bars; 0 when fewer than 220 bars exist"`
+	State            string   `json:"state" jsonschema:"uptrend, downtrend, sideways or insufficient-history; a description of the recent price path, not a prediction"`
 	Reasons          []string `json:"reasons"`
 }
 
@@ -91,7 +93,8 @@ func registerGetETFInfo(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_etf_info",
 		Description: "Snapshot of one ETF: its universe entry (known=false for symbols outside the universe that the data source still knows), provider metadata, the date range held, trailing total returns (1m to max, dividends reinvested), 1-year volatility, drawdowns, trailing-12-month dividends, 52-week range, and a rule-based trend reading (50/200-day averages, 12-1 momentum, state uptrend/downtrend/sideways with reasons). Percentages are plain numbers (7.5 = 7.5%). Fetches the symbol's full daily history from Yahoo Finance on first use and caches it.",
-		Annotations: readOnly("Get ETF info"),
+		Title:       "Get ETF info",
+		Annotations: readOnly("Get ETF info", true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in getETFInfoInput) (*mcp.CallToolResult, getETFInfoOutput, error) {
 		out, err := d.getETFInfo(ctx, in)
 		return nil, out, err
@@ -108,17 +111,17 @@ func (d Deps) getETFInfo(ctx context.Context, in getETFInfoInput) (getETFInfoOut
 	if err != nil {
 		return getETFInfoOutput{}, err
 	}
+	first, _ := s.First()
+	last, _ := s.Last()
 	summary, err := analytics.Summarize(s, asOf)
 	if err != nil {
-		return getETFInfoOutput{}, userError(err)
+		return getETFInfoOutput{}, withDataRange(err, s)
 	}
 	trend, err := analytics.AnalyzeTrend(s, asOf)
 	if err != nil {
-		return getETFInfoOutput{}, userError(err)
+		return getETFInfoOutput{}, withDataRange(err, s)
 	}
 
-	first, _ := s.First()
-	last, _ := s.Last()
 	out := getETFInfoOutput{
 		Symbol: s.Meta.Symbol,
 		Meta: metaOutput{
@@ -140,9 +143,7 @@ func (d Deps) getETFInfo(ctx context.Context, in getETFInfoInput) (getETFInfoOut
 		row := toRow(e)
 		out.Known, out.Universe = true, &row
 	}
-	if w := d.staleWarning(s.Meta.Symbol); w != "" {
-		out.Warnings = append(out.Warnings, w)
-	}
+	out.Warnings = append(out.Warnings, d.staleWarnings(s.Meta.Symbol)...)
 	if asOf.IsZero() {
 		if age := d.clock().Sub(last.Date); age > staleAfter {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("latest bar %s is %d days old", formatDate(last.Date), int(age.Hours()/24)))
@@ -151,17 +152,31 @@ func (d Deps) getETFInfo(ctx context.Context, in getETFInfoInput) (getETFInfoOut
 	return out, nil
 }
 
+// withDataRange appends the available date range to an insufficient-
+// history error so the caller can fix as_of without a second call.
+func withDataRange(err error, s *market.Series) error {
+	if !errors.Is(err, analytics.ErrInsufficientHistory) {
+		return userError(err)
+	}
+	first, _ := s.First()
+	last, _ := s.Last()
+	return fmt.Errorf("%w; data covers %s to %s", userError(err), formatDate(first.Date), formatDate(last.Date))
+}
+
 // toSummaryOutput converts fractions to percentages and rounds.
 func toSummaryOutput(s analytics.Summary) summaryOutput {
 	windows := make([]windowOutput, 0, len(s.Windows))
 	for _, w := range s.Windows {
-		windows = append(windows, windowOutput{
+		wo := windowOutput{
 			Label:          w.Label,
 			TotalReturnPct: pct(w.TotalReturn),
-			AnnualizedPct:  pct(w.Annualized),
 			From:           formatDate(w.From),
 			Available:      w.Available,
-		})
+		}
+		if w.AnnualizedAvailable {
+			wo.AnnualizedPct = ptr(pct(w.Annualized))
+		}
+		windows = append(windows, wo)
 	}
 	return summaryOutput{
 		AsOf:                formatDate(s.AsOf),

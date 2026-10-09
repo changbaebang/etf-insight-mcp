@@ -38,8 +38,9 @@ type listETFsOutput struct {
 func registerListETFs(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_etfs",
-		Description: "Lists the built-in universe of about 100 widely held US-listed ETFs, optionally filtered by category, issuer or free text. Needs no network. Leveraged and inverse funds are hidden unless include_leveraged is true or category is 'Leveraged / Inverse'. Start here to find symbols for the other tools; the response also lists every category name.",
-		Annotations: readOnly("List ETFs"),
+		Title:       "List ETFs",
+		Description: "Lists the built-in universe of about 125 widely held US-listed ETFs, optionally filtered by category, issuer or free text. Needs no network. Leveraged and inverse funds are hidden unless include_leveraged is true or category is 'Leveraged / Inverse'. Start here to find symbols for the other tools; the response also lists every category name.",
+		Annotations: readOnly("List ETFs", false),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in listETFsInput) (*mcp.CallToolResult, listETFsOutput, error) {
 		out, err := listETFs(in)
 		return nil, out, err

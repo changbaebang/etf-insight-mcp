@@ -48,13 +48,18 @@ type getPriceHistoryOutput struct {
 	To          string       `json:"to"`
 	Downsampled bool         `json:"downsampled"`
 	Points      []pricePoint `json:"points"`
+	Warnings    []string     `json:"warnings,omitempty"`
 }
 
 func registerGetPriceHistory(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_price_history",
 		Description: "Daily, weekly or monthly price points of one symbol (close, dividend-adjusted close and cash dividend per share), for charts or custom calculations. Weekly and monthly keep the last bar of each ISO week or calendar month. At most max_points are returned; when more would be needed, every k-th point plus the last is kept and downsampled is true. Prices are in the symbol's currency (USD for US ETFs, KRW per USD for KRW=X).",
-		Annotations: readOnly("Get price history"),
+		Title:       "Get price history",
+		Annotations: readOnly("Get price history", true),
+		InputSchema: inputSchema[getPriceHistoryInput](schemaTweaks{
+			defaults: map[string]any{"interval": intervalMonthly, "max_points": defaultMaxPoints},
+		}),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in getPriceHistoryInput) (*mcp.CallToolResult, getPriceHistoryOutput, error) {
 		out, err := d.getPriceHistory(ctx, in)
 		return nil, out, err
@@ -92,7 +97,7 @@ func (d Deps) getPriceHistory(ctx context.Context, in getPriceHistoryInput) (get
 		first, _ := s.First()
 		last, _ := s.Last()
 		return getPriceHistoryOutput{}, fmt.Errorf("no bars for %s between %s and %s; data covers %s to %s",
-			s.Meta.Symbol, in.Start, in.End, formatDate(first.Date), formatDate(last.Date))
+			s.Meta.Symbol, boundOr(start, "the first bar"), boundOr(end, "the last bar"), formatDate(first.Date), formatDate(last.Date))
 	}
 	bars = bucket(bars, interval)
 	bars, downsampled := downsample(bars, limit)
@@ -115,7 +120,16 @@ func (d Deps) getPriceHistory(ctx context.Context, in getPriceHistoryInput) (get
 		To:          points[len(points)-1].Date,
 		Downsampled: downsampled,
 		Points:      points,
+		Warnings:    d.staleWarnings(s.Meta.Symbol),
 	}, nil
+}
+
+// boundOr renders an optional date bound, or fallback when it is unset.
+func boundOr(t time.Time, fallback string) string {
+	if t.IsZero() {
+		return fallback
+	}
+	return formatDate(t)
 }
 
 // parseInterval validates the interval, defaulting to monthly.

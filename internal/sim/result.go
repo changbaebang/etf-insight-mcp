@@ -57,7 +57,8 @@ type Result struct {
 	Contributions int
 	// Invested is the sum of all contributions before fees.
 	Invested float64
-	// Fees is the sum of Plan.Amount × Plan.FeeRate over all contributions.
+	// Fees is the sum of Plan.Amount × Plan.FeeRate + Plan.FeeFixed over
+	// all contributions.
 	Fees float64
 	// FinalValue is the value of all holdings at End's close plus, when
 	// !Plan.Reinvest, the uninvested cash dividends.

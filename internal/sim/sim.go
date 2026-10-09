@@ -103,6 +103,12 @@ type Plan struct {
 	// e.g. 0.001 = 0.1%; 0 <= FeeRate < 1. The fee is taken before the
 	// contribution is split between symbols.
 	FeeRate float64
+	// FeeFixed is a constant commission per contribution in the plan
+	// currency, e.g. 0.99 USD, charged on top of FeeRate: net = Amount ×
+	// (1 − FeeRate) − FeeFixed. It must leave a positive net amount. For
+	// small daily purchases it is usually the dominant cost: 0.99 on a 5
+	// USD purchase is 19.8% of every contribution.
+	FeeFixed float64
 	// Reinvest selects the dividend model. Shares are always bought and
 	// valued at Bar.Close. true: on every ex-dividend date shares ×
 	// Bar.Dividend buys more shares at that day's close. false: the same
@@ -198,6 +204,12 @@ func normalise(p Plan) (Plan, error) {
 
 	if math.IsNaN(p.FeeRate) || p.FeeRate < 0 || p.FeeRate >= 1 {
 		return Plan{}, fmt.Errorf("sim: fee rate must be in [0, 1), got %v", p.FeeRate)
+	}
+	if math.IsNaN(p.FeeFixed) || p.FeeFixed < 0 || math.IsInf(p.FeeFixed, 0) {
+		return Plan{}, fmt.Errorf("sim: fixed fee must be >= 0, got %v", p.FeeFixed)
+	}
+	if p.FeeFixed >= p.Amount*(1-p.FeeRate) {
+		return Plan{}, fmt.Errorf("sim: fixed fee %v leaves nothing of a %v contribution to invest", p.FeeFixed, p.Amount)
 	}
 
 	p.CalendarSymbols, err = normaliseCalendarSymbols(p.CalendarSymbols, p.Allocations)

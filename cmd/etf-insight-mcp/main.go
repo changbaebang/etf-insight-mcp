@@ -18,7 +18,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// version is overridden at build time by goreleaser (-X main.version=...).
+// version is set at build time by the Makefile and the release build
+// (-ldflags "-X main.version=..."); "dev" means a plain go build.
 var version = "dev"
 
 // defaultCacheTTL is how long a cached symbol is reused before refetching.
@@ -47,6 +48,11 @@ func run(cacheDir string, ttl time.Duration) error {
 		}
 		cacheDir = dir
 	}
+	if err := checkCacheDir(cacheDir); err != nil {
+		// Serving without a cache would refetch every symbol on every call
+		// and label fresh data as uncacheable; better to stop and say so.
+		return fmt.Errorf("cache directory %s is not usable: %w (pass -cache-dir or set $%s)", cacheDir, err, cache.EnvCacheDir)
+	}
 	store := cache.New(yahoo.New(), cacheDir, ttl)
 	log.Printf("etf-insight-mcp %s: cache dir %s, ttl %s", version, cacheDir, ttl)
 
@@ -55,6 +61,23 @@ func run(cacheDir string, ttl time.Duration) error {
 
 	deps := tools.Deps{Source: store, Cache: store, Version: version, Now: time.Now}
 	return newServer(deps).Run(ctx, &mcp.StdioTransport{})
+}
+
+// checkCacheDir creates dir if needed and proves it is writable by
+// creating and removing a probe file.
+func checkCacheDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(dir, ".probe-*")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		return err
+	}
+	return os.Remove(name)
 }
 
 func main() {

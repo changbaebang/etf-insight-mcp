@@ -19,16 +19,17 @@ type simulateDCAOutput struct {
 	Currency string  `json:"currency"`
 	Cadence  string  `json:"cadence"`
 	simResultOutput
-	Baseline   *baselineOutput `json:"baseline,omitempty"`
-	Diff       *diffOutput     `json:"diff,omitempty"`
-	Disclaimer string          `json:"disclaimer"`
+	Comparison *comparisonOutput `json:"comparison,omitempty" jsonschema:"the plan and compare_with run on exactly the same days; absent when the baseline was skipped (see notes)"`
+	Disclaimer string            `json:"disclaimer"`
 }
 
 func registerSimulateDCA(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "simulate_dca",
-		Description: "Simulates buying one ETF with a fixed amount on every trading day, week or month between start and end, at each day's close with fractional shares, and reports what the investor ended up with: contributions, invested, fees, final value, profit, simple and money-weighted (XIRR) annualized return, max drawdown of the unitised value path, final holding and a month-end timeline. With currency KRW every contribution is converted at that day's KRW=X rate and an fx block explains how the rate moved the result. The same plan is also run on compare_with (default SPY) over the same realised dates, with the difference in diff. Historical, not a forecast; read notes for any adjustment such as a moved start date.",
-		Annotations: readOnly("Simulate DCA"),
+		Title:       "Simulate DCA",
+		Description: "Simulates buying ONE ETF with a fixed amount on every trading day, week or month between start and end, at each day's close with fractional shares, and reports what the investor ended up with: contributions, invested, fees (fee_rate and commission_fixed) and their share of the outlay, final value, profit, simple return, money-weighted (XIRR) annualized return (omitted for ranges under a year), max drawdown of the unitised value path, final holding (real share count) and a month-end timeline. With currency KRW every contribution is converted at that day's KRW=X rate and an fx block explains how the rate moved the result. The comparison block runs the plan and compare_with (default SPY) on exactly the same days and gives their difference. For several ETFs use simulate_portfolio_dca. Historical, not a forecast; read notes for any adjustment such as a moved start date.",
+		Annotations: readOnly("Simulate DCA", true),
+		InputSchema: inputSchema[simulateDCAInput](planTweaks(nil)),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in simulateDCAInput) (*mcp.CallToolResult, simulateDCAOutput, error) {
 		out, err := d.simulateDCA(ctx, in)
 		return nil, out, err
@@ -55,8 +56,7 @@ func (d Deps) simulateDCA(ctx context.Context, in simulateDCAInput) (simulateDCA
 		Currency:        plan.Currency,
 		Cadence:         string(plan.Cadence),
 		simResultOutput: run.result,
-		Baseline:        run.baseline,
-		Diff:            run.diff,
+		Comparison:      run.comparison,
 		Disclaimer:      Disclaimer,
 	}, nil
 }

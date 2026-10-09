@@ -129,13 +129,13 @@ func (e *engine) nav(k int, rate float64) float64 {
 	return e.totalValue(k, rate) / e.units
 }
 
-// contribute invests one contribution on day k. The fee comes off the
-// gross amount first, the net remainder is converted to USD at rate and
-// split by weight, and each symbol's share count grows by its slice
-// divided by that day's close.
+// contribute invests one contribution on day k. The fees (the rate on the
+// gross amount plus the fixed commission) come off first, the net
+// remainder is converted to USD at rate and split by weight, and each
+// symbol's share count grows by its slice divided by that day's close.
 func (e *engine) contribute(k int, day time.Time, rate, nav float64) {
 	gross := e.plan.Amount
-	fee := gross * e.plan.FeeRate
+	fee := gross*e.plan.FeeRate + e.plan.FeeFixed
 	net := gross - fee
 	netUSD := net / rate
 
