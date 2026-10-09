@@ -18,18 +18,38 @@ const defaultBaseline = "SPY"
 // fxSymbol is the Yahoo ticker of the KRW per USD exchange rate.
 const fxSymbol = "KRW=X"
 
+// costInput holds the fee and dividend fields every simulation tool
+// shares; the tool inputs embed it so the schema and the validation stay
+// identical.
+type costInput struct {
+	FeeRate           float64 `json:"fee_rate,omitempty" jsonschema:"fraction of each contribution lost to commissions, e.g. 0.001 for 0.1% (default 0)"`
+	CommissionFixed   float64 `json:"commission_fixed,omitempty" jsonschema:"fixed commission per contribution in the plan currency, e.g. 0.99 (default 0); applied after fee_rate and must leave something to invest. For small daily purchases this is usually the dominant cost"`
+	ReinvestDividends *bool   `json:"reinvest_dividends,omitempty" jsonschema:"true (default): every dividend buys more shares at the ex-dividend date's close; false: dividends accumulate as uninvested cash (cash_dividends). Shares are always real share counts bought at the close"`
+}
+
+// validate checks the fee fields against the size of one contribution.
+func (c costInput) validate(amount float64) error {
+	if err := checkFeeRate(c.FeeRate); err != nil {
+		return err
+	}
+	return checkFixedCommission(c.CommissionFixed, amount, c.FeeRate)
+}
+
+// reinvest applies the default of reinvest_dividends.
+func (c costInput) reinvest() bool {
+	return c.ReinvestDividends == nil || *c.ReinvestDividends
+}
+
 // planInput holds the fields simulate_dca and simulate_portfolio_dca
 // share; both embed it so the schema and the validation stay identical.
 type planInput struct {
-	Amount            float64 `json:"amount" jsonschema:"size of one contribution in currency before fees, e.g. 100 (USD) or 10000 (KRW); must be > 0"`
-	Currency          string  `json:"currency,omitempty" jsonschema:"USD or KRW (default USD); with KRW each contribution is converted at that day's KRW=X rate and every money field is reported in KRW"`
-	Cadence           string  `json:"cadence,omitempty" jsonschema:"daily (every trading day), weekly or monthly; default daily. The start date itself always contributes; later weekly/monthly contributions fall on the first trading day of each following ISO week / calendar month (a mid-period start is noted)"`
-	Start             string  `json:"start" jsonschema:"first contribution date YYYY-MM-DD; moved forward with a note when the history starts later"`
-	End               string  `json:"end,omitempty" jsonschema:"last valuation date YYYY-MM-DD, inclusive (default: the latest bar)"`
-	FeeRate           float64 `json:"fee_rate,omitempty" jsonschema:"fraction of each contribution lost to commissions, e.g. 0.001 for 0.1% (default 0)"`
-	ReinvestDividends *bool   `json:"reinvest_dividends,omitempty" jsonschema:"true (default): every dividend buys more shares at the ex-dividend date's close; false: dividends accumulate as uninvested cash (cash_dividends). Shares are always real share counts bought at the close"`
-	CompareWith       *string `json:"compare_with,omitempty" jsonschema:"symbol of a baseline (default SPY) run with the same plan on exactly the days both it and the plan's symbols traded; see comparison. Pass an empty string to skip the baseline"`
-	CommissionFixed   float64 `json:"commission_fixed,omitempty" jsonschema:"fixed commission per contribution in the plan currency, e.g. 0.99 (default 0); applied after fee_rate and must leave something to invest. For small daily purchases this is usually the dominant cost"`
+	Amount   float64 `json:"amount" jsonschema:"size of one contribution in currency before fees, e.g. 100 (USD) or 10000 (KRW); must be > 0"`
+	Currency string  `json:"currency,omitempty" jsonschema:"USD or KRW (default USD); with KRW each contribution is converted at that day's KRW=X rate and every money field is reported in KRW"`
+	Cadence  string  `json:"cadence,omitempty" jsonschema:"daily (every trading day), weekly or monthly; default daily. The start date itself always contributes; later weekly/monthly contributions fall on the first trading day of each following ISO week / calendar month (a mid-period start is noted)"`
+	Start    string  `json:"start" jsonschema:"first contribution date YYYY-MM-DD; moved forward with a note when the history starts later"`
+	End      string  `json:"end,omitempty" jsonschema:"last valuation date YYYY-MM-DD, inclusive (default: the latest bar)"`
+	costInput
+	CompareWith *string `json:"compare_with,omitempty" jsonschema:"symbol of a baseline (default SPY) run with the same plan on exactly the days both it and the plan's symbols traded; see comparison. Pass an empty string to skip the baseline"`
 }
 
 // allocationInput is one line of a portfolio.
@@ -97,6 +117,7 @@ type headlineOutput struct {
 	Contributions       int      `json:"contributions"`
 	Invested            float64  `json:"invested"`
 	Fees                float64  `json:"fees"`
+	CostRatioPct        float64  `json:"cost_ratio_pct" jsonschema:"fees as a percentage of invested"`
 	FinalValue          float64  `json:"final_value"`
 	Profit              float64  `json:"profit"`
 	ReturnPct           float64  `json:"return_pct"`
@@ -159,10 +180,7 @@ func (in planInput) toPlan(allocs []sim.Allocation) (plan sim.Plan, baseline str
 	if err := checkAmount(in.Amount); err != nil {
 		return sim.Plan{}, "", err
 	}
-	if err := checkFeeRate(in.FeeRate); err != nil {
-		return sim.Plan{}, "", err
-	}
-	if err := checkFixedCommission(in.CommissionFixed, in.Amount, in.FeeRate); err != nil {
+	if err := in.validate(in.Amount); err != nil {
 		return sim.Plan{}, "", err
 	}
 
@@ -179,7 +197,7 @@ func (in planInput) toPlan(allocs []sim.Allocation) (plan sim.Plan, baseline str
 		End:         end,
 		FeeRate:     in.FeeRate,
 		FeeFixed:    in.CommissionFixed,
-		Reinvest:    in.ReinvestDividends == nil || *in.ReinvestDividends,
+		Reinvest:    in.reinvest(),
 	}
 	return plan, baseline, nil
 }
@@ -233,13 +251,16 @@ func parseCurrency(s string) (string, error) {
 	}
 }
 
-// parseCadence validates the cadence, defaulting to daily.
+// parseCadence validates a recurring cadence, defaulting to daily. The
+// engine's "once" is reserved for the lump-sum leg of
+// simulate_lump_sum_vs_dca and is not accepted from a caller: a single
+// purchase is not a recurring plan.
 func parseCadence(s string) (sim.Cadence, error) {
 	if strings.TrimSpace(s) == "" {
 		return sim.Daily, nil
 	}
 	c, err := sim.ParseCadence(s)
-	if err != nil {
+	if err != nil || c == sim.Once {
 		return "", fmt.Errorf("cadence %q is not supported; use daily, weekly or monthly", s)
 	}
 	return c, nil
@@ -308,6 +329,51 @@ func toAllocationOutputs(allocs []sim.Allocation) []allocationOutput {
 	return out
 }
 
+// allocationSymbols lists the symbols of allocs in order.
+func allocationSymbols(allocs []sim.Allocation) []string {
+	out := make([]string, 0, len(allocs))
+	for _, a := range allocs {
+		out = append(out, a.Symbol)
+	}
+	return out
+}
+
+// loadInput fetches the history of every symbol plan buys, the exchange
+// rate when the plan is in KRW and any extra symbols, warming the cache
+// concurrently, and returns the sim.Input together with the fetch error
+// of each extra symbol. A plan symbol or the exchange rate that cannot be
+// loaded is an error; a missing extra symbol is left to the caller.
+func (d Deps) loadInput(ctx context.Context, plan sim.Plan, extra ...string) (sim.Input, map[string]error, error) {
+	symbols := append(allocationSymbols(plan.Allocations), extra...)
+	krw := plan.Currency == sim.CurrencyKRW
+	if krw {
+		symbols = append(symbols, fxSymbol)
+	}
+	series, errs := d.fetchAll(ctx, symbols)
+	for _, a := range plan.Allocations {
+		if err := errs[a.Symbol]; err != nil {
+			return sim.Input{}, nil, err
+		}
+	}
+	if err := errs[fxSymbol]; krw && err != nil {
+		return sim.Input{}, nil, fmt.Errorf("exchange rate: %w", err)
+	}
+	return sim.Input{Series: series, FX: series[fxSymbol]}, errs, nil
+}
+
+// planStaleWarnings collects the cache warnings of every symbol a plan
+// depends on: its allocations and, for a KRW plan, the exchange rate.
+func (d Deps) planStaleWarnings(plan sim.Plan) []string {
+	var out []string
+	for _, a := range plan.Allocations {
+		out = append(out, d.staleWarnings(a.Symbol)...)
+	}
+	if plan.Currency == sim.CurrencyKRW {
+		out = append(out, d.staleWarnings(fxSymbol)...)
+	}
+	return out
+}
+
 // simulation is one sim.Run mapped to the wire shape, with the optional
 // side-by-side comparison against the baseline.
 type simulation struct {
@@ -323,29 +389,14 @@ type simulation struct {
 // be computed is reported in notes rather than failing the call; a
 // missing plan symbol or exchange rate is an error.
 func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (simulation, error) {
-	planSymbols := make([]string, 0, len(plan.Allocations))
-	for _, a := range plan.Allocations {
-		planSymbols = append(planSymbols, a.Symbol)
-	}
-	symbols := append([]string(nil), planSymbols...)
-	krw := plan.Currency == sim.CurrencyKRW
-	if krw {
-		symbols = append(symbols, fxSymbol)
-	}
+	var extra []string
 	if baseline != "" {
-		symbols = append(symbols, baseline)
+		extra = []string{baseline}
 	}
-	series, errs := d.fetchAll(ctx, symbols)
-	for _, sym := range planSymbols {
-		if err := errs[sym]; err != nil {
-			return simulation{}, err
-		}
+	in, errs, err := d.loadInput(ctx, plan, extra...)
+	if err != nil {
+		return simulation{}, err
 	}
-	if err := errs[fxSymbol]; krw && err != nil {
-		return simulation{}, fmt.Errorf("exchange rate: %w", err)
-	}
-
-	in := sim.Input{Series: series, FX: series[fxSymbol]}
 	res, err := sim.Run(plan, in)
 	if err != nil {
 		return simulation{}, userError(err)
@@ -353,8 +404,10 @@ func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (sim
 	if err := checkFinite("result", res.Invested, res.FinalValue, res.Profit); err != nil {
 		return simulation{}, err
 	}
-	out := simulation{result: d.toSimResult(res, plan)}
+	out := simulation{result: toSimResult(res)}
+	out.result.Notes = append(out.result.Notes, d.planStaleWarnings(plan)...)
 
+	planSymbols := allocationSymbols(plan.Allocations)
 	switch {
 	case baseline == "":
 	case len(plan.Allocations) == 1 && plan.Allocations[0].Symbol == baseline:
@@ -431,6 +484,9 @@ func toHeadline(res *sim.Result) headlineOutput {
 		MaxDrawdownPct: round2(res.MaxDrawdownPct),
 		Notes:          append([]string(nil), res.Notes...),
 	}
+	if res.Invested > 0 {
+		h.CostRatioPct = pct(res.Fees / res.Invested)
+	}
 	h.Profit = round2(h.FinalValue - h.Invested)
 	var note string
 	h.AnnualizedReturnPct, note = annualizedPct(res)
@@ -441,9 +497,10 @@ func toHeadline(res *sim.Result) headlineOutput {
 }
 
 // toSimResult maps a sim.Result to the wire shape, rounding money to
-// cents and shares to four decimals, and appends a note for every symbol
-// the cache served stale.
-func (d Deps) toSimResult(res *sim.Result, plan sim.Plan) simResultOutput {
+// cents and shares to four decimals. Cache warnings are the caller's
+// (see planStaleWarnings), so a tool that shows several legs of one plan
+// reports them once.
+func toSimResult(res *sim.Result) simResultOutput {
 	head := toHeadline(res)
 	out := simResultOutput{
 		Start:               head.Start,
@@ -451,6 +508,7 @@ func (d Deps) toSimResult(res *sim.Result, plan sim.Plan) simResultOutput {
 		Contributions:       head.Contributions,
 		Invested:            head.Invested,
 		Fees:                head.Fees,
+		CostRatioPct:        head.CostRatioPct,
 		FinalValue:          head.FinalValue,
 		Profit:              head.Profit,
 		ReturnPct:           head.ReturnPct,
@@ -460,9 +518,6 @@ func (d Deps) toSimResult(res *sim.Result, plan sim.Plan) simResultOutput {
 		Holdings:            make([]holdingOutput, 0, len(res.Holdings)),
 		Timeline:            make([]pointOutput, 0, len(res.Timeline)),
 		Notes:               head.Notes,
-	}
-	if res.Invested > 0 {
-		out.CostRatioPct = pct(res.Fees / res.Invested)
 	}
 	for _, h := range res.Holdings {
 		out.Holdings = append(out.Holdings, holdingOutput{
@@ -487,12 +542,6 @@ func (d Deps) toSimResult(res *sim.Result, plan sim.Plan) simResultOutput {
 			AvgPurchaseRate: round2(res.FX.AvgPurchaseRate),
 			FXEffect:        round2(res.FX.FXEffect),
 		}
-	}
-	for _, a := range plan.Allocations {
-		out.Notes = append(out.Notes, d.staleWarnings(a.Symbol)...)
-	}
-	if plan.Currency == sim.CurrencyKRW {
-		out.Notes = append(out.Notes, d.staleWarnings(fxSymbol)...)
 	}
 	return out
 }
