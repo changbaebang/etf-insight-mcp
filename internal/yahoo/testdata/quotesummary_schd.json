@@ -1,0 +1,448 @@
+{
+ "quoteSummary": {
+  "result": [
+   {
+    "fundProfile": {
+     "family": "Schwab ETFs",
+     "categoryName": "Large Value",
+     "legalType": "Exchange Traded Fund",
+     "feesExpensesInvestment": {
+      "annualReportExpenseRatio": {
+       "raw": 0.00059999997,
+       "fmt": "0.06%"
+      },
+      "annualHoldingsTurnover": {
+       "raw": 0.3,
+       "fmt": "30.00%"
+      },
+      "totalNetAssets": {
+       "raw": 118710.95,
+       "fmt": "118,710.95"
+      }
+     }
+    },
+    "summaryDetail": {
+     "totalAssets": {
+      "raw": 107887099904,
+      "fmt": "107.89B",
+      "longFmt": "107,887,099,904"
+     },
+     "yield": {
+      "raw": 0.0324,
+      "fmt": "3.24%"
+     },
+     "trailingAnnualDividendRate": {
+      "raw": 0.0,
+      "fmt": "0.00"
+     },
+     "trailingAnnualDividendYield": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "fiftyTwoWeekHigh": {
+      "raw": 35.31,
+      "fmt": "35.31"
+     },
+     "fiftyTwoWeekLow": {
+      "raw": 26.32,
+      "fmt": "26.32"
+     },
+     "fiftyDayAverage": {
+      "raw": 33.992,
+      "fmt": "33.99"
+     },
+     "twoHundredDayAverage": {
+      "raw": 31.8244,
+      "fmt": "31.82"
+     },
+     "currency": "USD"
+    },
+    "price": {
+     "regularMarketTime": 1791489600,
+     "regularMarketPrice": {
+      "raw": 33.15,
+      "fmt": "33.15"
+     },
+     "exchange": "PCX",
+     "exchangeName": "NYSEArca",
+     "marketState": "PRE",
+     "quoteType": "ETF",
+     "symbol": "SCHD",
+     "shortName": "Schwab US Dividend Equity ETF",
+     "longName": "Schwab U.S. Dividend Equity ETF",
+     "currency": "USD"
+    },
+    "defaultKeyStatistics": {
+     "category": "Large Value",
+     "fundFamily": "Schwab ETFs",
+     "legalType": "Exchange Traded Fund",
+     "fundInceptionDate": {
+      "raw": 1319068800,
+      "fmt": "2011-10-20"
+     },
+     "beta3Year": {
+      "raw": 0.56,
+      "fmt": "0.56"
+     },
+     "ytdReturn": {
+      "raw": 0.2195586,
+      "fmt": "21.96%"
+     },
+     "totalAssets": {
+      "raw": 107887099904,
+      "fmt": "107.89B",
+      "longFmt": "107,887,099,904"
+     },
+     "yield": {
+      "raw": 0.0324,
+      "fmt": "3.24%"
+     }
+    },
+    "topHoldings": {
+     "cashPosition": {
+      "raw": 0.00090000004,
+      "fmt": "0.09%"
+     },
+     "stockPosition": {
+      "raw": 0.9991,
+      "fmt": "99.91%"
+     },
+     "bondPosition": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "otherPosition": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "preferredPosition": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "convertiblePosition": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "holdings": [
+      {
+       "symbol": "TXN",
+       "holdingName": "Texas Instruments Inc",
+       "holdingPercent": {
+        "raw": 0.046566702,
+        "fmt": "4.66%"
+       }
+      },
+      {
+       "symbol": "QCOM",
+       "holdingName": "Qualcomm Inc",
+       "holdingPercent": {
+        "raw": 0.0456261,
+        "fmt": "4.56%"
+       }
+      },
+      {
+       "symbol": "PG",
+       "holdingName": "Procter & Gamble Co",
+       "holdingPercent": {
+        "raw": 0.0423155,
+        "fmt": "4.23%"
+       }
+      }
+     ],
+     "equityHoldings": {
+      "priceToEarnings": {
+       "raw": 0.05503,
+       "fmt": "0.06"
+      },
+      "priceToBook": {
+       "raw": 0.28174,
+       "fmt": "0.28"
+      },
+      "priceToSales": {
+       "raw": 0.55969,
+       "fmt": "0.56"
+      },
+      "priceToCashflow": {
+       "raw": 0.10055,
+       "fmt": "0.1"
+      },
+      "medianMarketCap": {},
+      "threeYearEarningsGrowth": {},
+      "priceToEarningsCat": {},
+      "priceToBookCat": {},
+      "priceToSalesCat": {},
+      "priceToCashflowCat": {},
+      "medianMarketCapCat": {},
+      "threeYearEarningsGrowthCat": {}
+     },
+     "bondHoldings": {
+      "maturity": {},
+      "duration": {},
+      "creditQuality": {},
+      "maturityCat": {},
+      "durationCat": {},
+      "creditQualityCat": {}
+     },
+     "bondRatings": [
+      {
+       "us_government": {
+        "raw": 0.0,
+        "fmt": "0.00%"
+       }
+      }
+     ],
+     "sectorWeightings": [
+      {
+       "realestate": {
+        "raw": 0.0,
+        "fmt": "0.00%"
+       }
+      },
+      {
+       "consumer_cyclical": {
+        "raw": 0.0673,
+        "fmt": "6.73%"
+       }
+      },
+      {
+       "basic_materials": {
+        "raw": 0.0,
+        "fmt": "0.00%"
+       }
+      }
+     ]
+    },
+    "fundPerformance": {
+     "fundCategoryName": "Large Value",
+     "trailingReturns": {
+      "asOfDate": {
+       "raw": 1791331200,
+       "fmt": "2026-10-07"
+      },
+      "ytd": {
+       "raw": 0.2146398,
+       "fmt": "21.46%"
+      },
+      "oneMonth": {
+       "raw": -0.0599056,
+       "fmt": "-5.99%"
+      },
+      "threeMonth": {
+       "raw": 0.0340742,
+       "fmt": "3.41%"
+      },
+      "oneYear": {
+       "raw": 0.23364,
+       "fmt": "23.36%"
+      },
+      "threeYear": {
+       "raw": 0.1544442,
+       "fmt": "15.44%"
+      },
+      "fiveYear": {
+       "raw": 0.0947983,
+       "fmt": "9.48%"
+      },
+      "tenYear": {
+       "raw": 0.124372505,
+       "fmt": "12.44%"
+      },
+      "lastBullMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      },
+      "lastBearMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      }
+     },
+     "trailingReturnsCat": {
+      "ytd": {
+       "raw": 0.0782128,
+       "fmt": "7.82%"
+      },
+      "oneMonth": {
+       "raw": 0.0623014,
+       "fmt": "6.23%"
+      },
+      "threeMonth": {
+       "raw": 0.038968697,
+       "fmt": "3.90%"
+      },
+      "oneYear": {
+       "raw": 0.2615741,
+       "fmt": "26.16%"
+      },
+      "threeYear": {
+       "raw": 0.1587311,
+       "fmt": "15.87%"
+      },
+      "fiveYear": {
+       "raw": 0.1012714,
+       "fmt": "10.13%"
+      },
+      "tenYear": {
+       "raw": 0.112622,
+       "fmt": "11.26%"
+      },
+      "lastBullMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      },
+      "lastBearMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      }
+     },
+     "annualTotalReturns": {
+      "returns": [
+       {
+        "year": "2025",
+        "annualValue": {
+         "raw": 0.0433039,
+         "fmt": "4.33%"
+        }
+       },
+       {
+        "year": "2024",
+        "annualValue": {
+         "raw": 0.11670861,
+         "fmt": "11.67%"
+        }
+       },
+       {
+        "year": "2023",
+        "annualValue": {
+         "raw": 0.045689702,
+         "fmt": "4.57%"
+        }
+       }
+      ],
+      "returnsCat": [
+       {
+        "year": "2025",
+        "annualValue": {
+         "raw": 0.1496566,
+         "fmt": "14.97%"
+        }
+       },
+       {
+        "year": "2024",
+        "annualValue": {
+         "raw": 0.14283471,
+         "fmt": "14.28%"
+        }
+       },
+       {
+        "year": "2023",
+        "annualValue": {
+         "raw": 0.1163058,
+         "fmt": "11.63%"
+        }
+       }
+      ]
+     },
+     "riskOverviewStatistics": {
+      "riskRating": {},
+      "riskStatistics": [
+       {
+        "year": "5y",
+        "alpha": {
+         "raw": -0.74,
+         "fmt": "-0.74"
+        },
+        "beta": {
+         "raw": 0.68,
+         "fmt": "0.68"
+        },
+        "meanAnnualReturn": {
+         "raw": 0.85,
+         "fmt": "0.85"
+        },
+        "rSquared": {
+         "raw": 49.61,
+         "fmt": "49.61"
+        },
+        "stdDev": {
+         "raw": 15.13,
+         "fmt": "15.13"
+        },
+        "sharpeRatio": {
+         "raw": 0.42,
+         "fmt": "0.42"
+        },
+        "treynorRatio": {
+         "raw": 8.02,
+         "fmt": "8.02"
+        }
+       },
+       {
+        "year": "3y",
+        "alpha": {
+         "raw": 1.4,
+         "fmt": "1.4"
+        },
+        "beta": {
+         "raw": 0.56,
+         "fmt": "0.56"
+        },
+        "meanAnnualReturn": {
+         "raw": 1.28,
+         "fmt": "1.28"
+        },
+        "rSquared": {
+         "raw": 25.04,
+         "fmt": "25.04"
+        },
+        "stdDev": {
+         "raw": 13.75,
+         "fmt": "13.75"
+        },
+        "sharpeRatio": {
+         "raw": 0.79,
+         "fmt": "0.79"
+        },
+        "treynorRatio": {
+         "raw": 19.49,
+         "fmt": "19.49"
+        }
+       },
+       {
+        "year": "10y",
+        "alpha": {
+         "raw": -0.3,
+         "fmt": "-0.3"
+        },
+        "beta": {
+         "raw": 0.82,
+         "fmt": "0.82"
+        },
+        "meanAnnualReturn": {
+         "raw": 1.08,
+         "fmt": "1.08"
+        },
+        "rSquared": {
+         "raw": 68.04,
+         "fmt": "68.04"
+        },
+        "stdDev": {
+         "raw": 15.3,
+         "fmt": "15.3"
+        },
+        "sharpeRatio": {
+         "raw": 0.68,
+         "fmt": "0.68"
+        },
+        "treynorRatio": {
+         "raw": 11.99,
+         "fmt": "11.99"
+        }
+       }
+      ]
+     }
+    }
+   }
+  ],
+  "error": null
+ }
+}

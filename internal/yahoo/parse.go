@@ -15,25 +15,18 @@ import (
 // Nearly every symbol this project cares about trades in New York.
 const defaultLocation = "America/New_York"
 
-// chartResponse mirrors the subset of the v8 chart payload that is read.
-// Optional fields are zero-value tolerant, so a missing or null key never
-// fails decoding.
-type chartResponse struct {
-	Chart struct {
-		Result []chartResult `json:"result"`
-		Error  *chartError   `json:"error"`
-	} `json:"chart"`
-}
-
-// chartError is the error object Yahoo returns in place of a result.
-type chartError struct {
+// apiError is the error object Yahoo returns in place of a result. Every
+// endpoint nests it the same way under its own top-level key:
+// {"chart":{"error":...}}, {"quoteSummary":{"error":...}},
+// {"finance":{"error":...}}.
+type apiError struct {
 	Code        string `json:"code"`
 	Description string `json:"description"`
 }
 
 // err converts the API error object into a Go error, mapping the
 // "Not Found" code onto market.ErrNotFound.
-func (e *chartError) err() error {
+func (e *apiError) err() error {
 	desc := e.Description
 	if desc == "" {
 		desc = "no data for symbol"
@@ -41,7 +34,36 @@ func (e *chartError) err() error {
 	if e.Code == "Not Found" {
 		return fmt.Errorf("%s: %w", desc, market.ErrNotFound)
 	}
-	return fmt.Errorf("chart error %q: %s", e.Code, desc)
+	return fmt.Errorf("yahoo error %q: %s", e.Code, desc)
+}
+
+// decodeAPIError finds the error object in a Yahoo envelope of any
+// endpoint, or returns nil when body is not such an envelope or carries no
+// error.
+func decodeAPIError(body []byte) *apiError {
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil
+	}
+	for _, raw := range env {
+		var wrapper struct {
+			Error *apiError `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &wrapper); err == nil && wrapper.Error != nil {
+			return wrapper.Error
+		}
+	}
+	return nil
+}
+
+// chartResponse mirrors the subset of the v8 chart payload that is read.
+// Optional fields are zero-value tolerant, so a missing or null key never
+// fails decoding.
+type chartResponse struct {
+	Chart struct {
+		Result []chartResult `json:"result"`
+		Error  *apiError     `json:"error"`
+	} `json:"chart"`
 }
 
 type chartResult struct {
@@ -66,9 +88,11 @@ type chartMeta struct {
 	ShortName            string  `json:"shortName"`
 }
 
+// chartEvents holds the corporate actions, each keyed by the event's unix
+// timestamp as a string.
 type chartEvents struct {
-	// Dividends is keyed by the event's unix timestamp as a string.
 	Dividends map[string]chartDividend `json:"dividends"`
+	Splits    map[string]chartSplit    `json:"splits"`
 }
 
 type chartDividend struct {
@@ -76,15 +100,25 @@ type chartDividend struct {
 	Date   int64   `json:"date"`
 }
 
+type chartSplit struct {
+	Date        int64   `json:"date"`
+	Numerator   float64 `json:"numerator"`
+	Denominator float64 `json:"denominator"`
+}
+
 type chartIndicators struct {
 	Quote    []chartQuote    `json:"quote"`
 	AdjClose []chartAdjClose `json:"adjclose"`
 }
 
-// chartQuote holds the raw price arrays. Only Close is used. Entries are
-// pointers because the API emits null for days without a print.
+// chartQuote holds the raw OHLCV arrays, one entry per timestamp. Entries
+// are pointers because the API emits null for days without a print.
 type chartQuote struct {
-	Close []*float64 `json:"close"`
+	Open   []*float64 `json:"open"`
+	High   []*float64 `json:"high"`
+	Low    []*float64 `json:"low"`
+	Close  []*float64 `json:"close"`
+	Volume []*float64 `json:"volume"`
 }
 
 type chartAdjClose struct {
@@ -118,8 +152,9 @@ func parseChart(body []byte, now time.Time) (*market.Series, error) {
 	attachDividends(bars, r.Events.Dividends, loc)
 
 	s := &market.Series{
-		Meta: parseMeta(r.Meta, loc, now),
-		Bars: bars,
+		Meta:   parseMeta(r.Meta, loc, now),
+		Bars:   bars,
+		Splits: parseSplits(r.Events.Splits, loc),
 	}
 	if err := s.Validate(); err != nil {
 		return nil, err
@@ -127,27 +162,36 @@ func parseChart(body []byte, now time.Time) (*market.Series, error) {
 	return s, nil
 }
 
-// parseBars pairs each timestamp with its close and adjusted close,
-// dropping days where either is null or non-positive. A timestamp that
-// falls on the same local date as the previous bar replaces it, so the
-// latest print for a day wins.
+// parseBars pairs each timestamp with its prices, dropping days where the
+// close or adjusted close is null or non-positive. Open, high, low and
+// volume are 0 when not reported. A timestamp that falls on the same
+// local date as the previous bar replaces it, so the latest print for a
+// day wins.
 func parseBars(r chartResult, loc *time.Location) ([]market.Bar, error) {
-	closes, adjs, err := priceArrays(r.Indicators)
+	quote, adjs, err := priceArrays(r.Indicators)
 	if err != nil {
 		return nil, err
 	}
 	n := len(r.Timestamp)
-	if len(closes) != n || len(adjs) != n {
+	if len(quote.Close) != n || len(adjs) != n {
 		return nil, fmt.Errorf("chart arrays disagree: %d timestamps, %d closes, %d adjcloses",
-			n, len(closes), len(adjs))
+			n, len(quote.Close), len(adjs))
 	}
 	bars := make([]market.Bar, 0, n)
 	for i, ts := range r.Timestamp {
-		c, a := closes[i], adjs[i]
+		c, a := quote.Close[i], adjs[i]
 		if c == nil || a == nil || *c <= 0 || *a <= 0 {
 			continue
 		}
-		bar := market.Bar{Date: localDay(ts, loc), Close: *c, AdjClose: *a}
+		bar := market.Bar{
+			Date:     localDay(ts, loc),
+			Open:     at(quote.Open, i),
+			High:     at(quote.High, i),
+			Low:      at(quote.Low, i),
+			Volume:   int64(at(quote.Volume, i)),
+			Close:    *c,
+			AdjClose: *a,
+		}
 		if k := len(bars); k > 0 && bars[k-1].Date.Equal(bar.Date) {
 			bars[k-1] = bar
 			continue
@@ -157,18 +201,27 @@ func parseBars(r chartResult, loc *time.Location) ([]market.Bar, error) {
 	return bars, nil
 }
 
-// priceArrays extracts the close and adjclose arrays. When the payload
-// omits the adjclose block, the raw close stands in for it.
-func priceArrays(ind chartIndicators) (closes, adjs []*float64, err error) {
+// priceArrays extracts the OHLCV block and the adjclose array. When the
+// payload omits the adjclose block, the raw close stands in for it.
+func priceArrays(ind chartIndicators) (quote chartQuote, adjs []*float64, err error) {
 	if len(ind.Quote) == 0 {
-		return nil, nil, errors.New("chart has no quote indicator")
+		return chartQuote{}, nil, errors.New("chart has no quote indicator")
 	}
-	closes = ind.Quote[0].Close
-	adjs = closes
+	quote = ind.Quote[0]
+	adjs = quote.Close
 	if len(ind.AdjClose) > 0 && ind.AdjClose[0].AdjClose != nil {
 		adjs = ind.AdjClose[0].AdjClose
 	}
-	return closes, adjs, nil
+	return quote, adjs, nil
+}
+
+// at returns the i-th entry of a nullable array, or 0 when the entry is
+// null or the array is shorter than the timestamps.
+func at(arr []*float64, i int) float64 {
+	if i >= len(arr) || arr[i] == nil {
+		return 0
+	}
+	return *arr[i]
 }
 
 // attachDividends adds each cash dividend to the bar on its exchange-local
@@ -179,14 +232,9 @@ func attachDividends(bars []market.Bar, dividends map[string]chartDividend, loc 
 		if d.Amount <= 0 {
 			continue
 		}
-		ts := d.Date
-		if ts == 0 {
-			// Some payloads carry the timestamp only in the map key.
-			parsed, err := strconv.ParseInt(key, 10, 64)
-			if err != nil {
-				continue
-			}
-			ts = parsed
+		ts, ok := eventTime(key, d.Date)
+		if !ok {
+			continue
 		}
 		date := localDay(ts, loc)
 		i := sort.Search(len(bars), func(i int) bool { return !bars[i].Date.Before(date) })
@@ -194,6 +242,43 @@ func attachDividends(bars []market.Bar, dividends map[string]chartDividend, loc 
 			bars[i].Dividend += d.Amount
 		}
 	}
+}
+
+// parseSplits converts the split events into market.Splits in ascending
+// date order, using the same exchange-local date conversion as dividends.
+// Splits with a non-positive ratio are dropped; nil is returned when none
+// remain.
+func parseSplits(splits map[string]chartSplit, loc *time.Location) []market.Split {
+	out := make([]market.Split, 0, len(splits))
+	for key, sp := range splits {
+		if sp.Numerator <= 0 || sp.Denominator <= 0 {
+			continue
+		}
+		ts, ok := eventTime(key, sp.Date)
+		if !ok {
+			continue
+		}
+		out = append(out, market.Split{Date: localDay(ts, loc), Numerator: sp.Numerator, Denominator: sp.Denominator})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date.Before(out[j].Date) })
+	return out
+}
+
+// eventTime returns the unix time of an event: its date field, or the map
+// key when the field is missing, which some payloads do. ok is false when
+// neither is usable.
+func eventTime(key string, date int64) (ts int64, ok bool) {
+	if date != 0 {
+		return date, true
+	}
+	parsed, err := strconv.ParseInt(key, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
 }
 
 // parseMeta copies the descriptive fields, preferring the long name and

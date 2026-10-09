@@ -1,0 +1,92 @@
+{
+ "count": 13,
+ "quotes": [
+  {
+   "exchange": "PCX",
+   "shortname": "Fidelity High Dividend ETF",
+   "quoteType": "ETF",
+   "symbol": "FDVV",
+   "index": "quotes",
+   "score": 23546.0,
+   "typeDisp": "ETF",
+   "longname": "Fidelity High Dividend ETF",
+   "exchDisp": "NYSEArca",
+   "isYahooFinance": true
+  },
+  {
+   "exchange": "PCX",
+   "shortname": "State Street SPDR Portfolio S&P",
+   "quoteType": "ETF",
+   "symbol": "SPYD",
+   "index": "quotes",
+   "score": 23149.0,
+   "typeDisp": "ETF",
+   "longname": "State Street SPDR Portfolio S&P 500 High Dividend ETF",
+   "exchDisp": "NYSEArca",
+   "isYahooFinance": true
+  },
+  {
+   "exchange": "PCX",
+   "shortname": "iShares Core High Dividend ETF",
+   "quoteType": "ETF",
+   "symbol": "HDV",
+   "index": "quotes",
+   "score": 22969.0,
+   "typeDisp": "ETF",
+   "longname": "iShares Core High Dividend ETF",
+   "exchDisp": "NYSEArca",
+   "isYahooFinance": true
+  }
+ ],
+ "news": [
+  {
+   "uuid": "d68fc3d1-9481-34eb-ab4a-84581c4330b7",
+   "title": "At 68 With $780,000, Do You Live on the Dividends or Sell Shares? These 3 ETFs Let You Do Both",
+   "publisher": "24/7 Wall St.",
+   "link": "https://finance.yahoo.com/markets/stocks/articles/68-780-000-live-dividends-203327791.html",
+   "providerPublishTime": 1791491607,
+   "type": "STORY",
+   "relatedTickers": [
+    "HDV",
+    "IEI",
+    "VITSX"
+   ]
+  },
+  {
+   "uuid": "3519ee72-eaa5-3b69-93dd-95a481c72914",
+   "title": "$7,650 a Month Without Owning a Single Stock: The All-ETF Income Portfolio",
+   "publisher": "24/7 Wall St.",
+   "link": "https://finance.yahoo.com/news/7-650-month-without-owning-172502708.html",
+   "providerPublishTime": 1791480302,
+   "type": "STORY",
+   "relatedTickers": [
+    "SPYI",
+    "HDV",
+    "JEPI",
+    "PFF",
+    "SPYD",
+    "USHY",
+    "VHYAX"
+   ]
+  },
+  {
+   "uuid": "09ef6857-ab0d-397f-9448-cebda13c222f",
+   "title": "$7,650 a Month Without Owning a Single Stock: The All-ETF Income Portfolio",
+   "publisher": "24/7 Wall St.",
+   "link": "https://finance.yahoo.com/markets/options/articles/7-650-month-without-owning-182258039.html",
+   "providerPublishTime": 1791397378,
+   "type": "STORY",
+   "relatedTickers": [
+    "SPYI",
+    "HDV",
+    "JEPI",
+    "PFF",
+    "SPYD",
+    "USHY",
+    "VHYAX"
+   ]
+  }
+ ],
+ "nav": [],
+ "lists": []
+}

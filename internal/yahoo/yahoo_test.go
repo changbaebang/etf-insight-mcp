@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ type recorder struct {
 	hits      int
 	userAgent string
 	path      string
+	uri       string // raw request URI, to check escaping
 	query     string
 }
 
@@ -28,6 +30,7 @@ func (r *recorder) observe(req *http.Request) int {
 	r.hits++
 	r.userAgent = req.Header.Get("User-Agent")
 	r.path = req.URL.Path
+	r.uri = req.RequestURI
 	r.query = req.URL.RawQuery
 	return r.hits
 }
@@ -43,13 +46,22 @@ func respond(w http.ResponseWriter, status int, body []byte) {
 	_, _ = w.Write(body)
 }
 
+// newTestServer starts a server driven by handler, closed with the test,
+// and returns its URL.
+func newTestServer(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 // newTestClient starts a server driven by handler and returns a Client
 // pointed at it with fast retries. Extra options are applied last.
 func newTestClient(t *testing.T, handler http.HandlerFunc, opts ...Option) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	base := []Option{WithBaseURL(srv.URL), WithHTTPClient(srv.Client()), WithRetries(3, time.Millisecond)}
+	base := []Option{WithBaseURL(srv.URL), WithCookieURL(srv.URL), WithHTTPClient(srv.Client()), WithRetries(3, time.Millisecond)}
 	return New(append(base, opts...)...)
 }
 
@@ -69,8 +81,8 @@ func statusSequence(rec *recorder, fixture []byte, statuses ...int) http.Handler
 
 func TestNewDefaults(t *testing.T) {
 	c := New()
-	if c.baseURL != defaultBaseURL || c.userAgent != defaultUserAgent {
-		t.Errorf("defaults = %q %q", c.baseURL, c.userAgent)
+	if c.baseURL != defaultBaseURL || c.cookieURL != defaultCookieURL || c.userAgent != defaultUserAgent {
+		t.Errorf("defaults = %q %q %q", c.baseURL, c.cookieURL, c.userAgent)
 	}
 	if c.attempts != defaultAttempts || c.backoff != defaultBackoff {
 		t.Errorf("retry defaults = %d %v", c.attempts, c.backoff)
@@ -78,10 +90,17 @@ func TestNewDefaults(t *testing.T) {
 	if c.httpClient.Timeout != defaultTimeout {
 		t.Errorf("timeout = %v, want %v", c.httpClient.Timeout, defaultTimeout)
 	}
+	if c.summaryTTL != defaultSummaryTTL || c.session == nil || c.memo == nil || c.now == nil {
+		t.Errorf("session defaults = ttl %v session %v memo %v", c.summaryTTL, c.session, c.memo)
+	}
 
-	custom := New(WithBaseURL("http://example.test/"), WithUserAgent("ua"), WithRetries(0, -time.Second))
+	custom := New(WithBaseURL("http://example.test/"), WithCookieURL("http://cookie.test"), WithUserAgent("ua"),
+		WithRetries(0, -time.Second), WithSummaryTTL(-time.Second))
 	if custom.baseURL != "http://example.test" {
 		t.Errorf("trailing slash not trimmed: %q", custom.baseURL)
+	}
+	if custom.cookieURL != "http://cookie.test" {
+		t.Errorf("cookieURL = %q", custom.cookieURL)
 	}
 	if custom.userAgent != "ua" {
 		t.Errorf("userAgent = %q", custom.userAgent)
@@ -89,8 +108,11 @@ func TestNewDefaults(t *testing.T) {
 	if custom.attempts != 1 || custom.backoff != 0 {
 		t.Errorf("WithRetries(0,-1s) = %d %v, want 1 0", custom.attempts, custom.backoff)
 	}
-	ignored := New(WithBaseURL(""), WithUserAgent(""), WithHTTPClient(nil))
-	if ignored.baseURL != defaultBaseURL || ignored.userAgent != defaultUserAgent || ignored.httpClient == nil {
+	if custom.summaryTTL != 0 {
+		t.Errorf("WithSummaryTTL(-1s) = %v, want 0", custom.summaryTTL)
+	}
+	ignored := New(WithBaseURL(""), WithCookieURL(""), WithUserAgent(""), WithHTTPClient(nil))
+	if ignored.baseURL != defaultBaseURL || ignored.cookieURL != defaultCookieURL || ignored.userAgent != defaultUserAgent || ignored.httpClient == nil {
 		t.Error("empty option values should be ignored")
 	}
 }
@@ -126,7 +148,7 @@ func TestClientSeries(t *testing.T) {
 	if rec.path != "/v8/finance/chart/SPY" {
 		t.Errorf("path = %q, want upper-cased trimmed symbol", rec.path)
 	}
-	for _, want := range []string{"period1=-2208988800", "period2=", "interval=1d", "events=div", "includeAdjustedClose=true"} {
+	for _, want := range []string{"period1=-2208988800", "period2=", "interval=1d", "events=div%2Csplits", "includeAdjustedClose=true"} {
 		if !strings.Contains(rec.query, want) {
 			t.Errorf("query %q lacks %q", rec.query, want)
 		}
@@ -147,8 +169,115 @@ func TestClientSeries(t *testing.T) {
 	if got := s.Bars[4]; got.Dividend != 1.889 || !got.Date.Equal(date(t, "2026-09-18")) {
 		t.Errorf("dividend bar = %+v", got)
 	}
+	if got := s.Bars[0]; got.Open != 764.719970703125 || got.Volume != 45512700 {
+		t.Errorf("first bar OHLCV not filled: %+v", got)
+	}
 	if s.Meta.FetchedAt.IsZero() || time.Since(s.Meta.FetchedAt) > time.Minute {
 		t.Errorf("FetchedAt = %v, want roughly now", s.Meta.FetchedAt)
+	}
+}
+
+func TestClientSeriesSplits(t *testing.T) {
+	rec := &recorder{}
+	c := newTestClient(t, statusSequence(rec, readFixture(t, "tqqq_splits.json"), http.StatusOK))
+	s, err := c.Series(context.Background(), "TQQQ")
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+	if len(s.Splits) != 1 || s.Splits[0].Ratio() != "2:1" || !s.Splits[0].Date.Equal(date(t, "2022-01-13")) {
+		t.Errorf("Splits = %+v, want one 2:1 split on 2022-01-13", s.Splits)
+	}
+}
+
+func TestSeriesRangePeriods(t *testing.T) {
+	d := func(s string) time.Time { return date(t, s) }
+	tests := []struct {
+		name        string
+		from, to    time.Time
+		wantPeriod1 string
+		wantPeriod2 string
+	}{
+		{
+			name: "bounded range", from: d("2022-01-10"), to: d("2022-01-19"),
+			wantPeriod1: "1641772800", // 2022-01-10 00:00 UTC
+			wantPeriod2: "1642636799", // 2022-01-19 23:59:59 UTC
+		},
+		{
+			name: "single day", from: d("2022-01-13"), to: d("2022-01-13"),
+			wantPeriod1: "1642032000", wantPeriod2: "1642118399",
+		},
+		{
+			name: "clock and zone are dropped", from: time.Date(2022, 1, 10, 23, 59, 0, 0, time.FixedZone("x", -5*3600)), to: d("2022-01-19"),
+			wantPeriod1: "1641772800", wantPeriod2: "1642636799",
+		},
+		{
+			name: "zero from is all history", to: d("2022-01-19"),
+			wantPeriod1: "-2208988800", wantPeriod2: "1642636799",
+		},
+		{
+			name: "zero to is now", from: d("2022-01-10"),
+			wantPeriod1: "1641772800", wantPeriod2: "1791460800", // fixtureNow
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recorder{}
+			c := newTestClient(t, statusSequence(rec, readFixture(t, "tqqq_splits.json"), http.StatusOK))
+			c.now = func() time.Time { return fixtureNow }
+
+			s, err := c.SeriesRange(context.Background(), "tqqq", tt.from, tt.to)
+			if err != nil {
+				t.Fatalf("SeriesRange: %v", err)
+			}
+			q, err := url.ParseQuery(rec.query)
+			if err != nil {
+				t.Fatalf("parse query %q: %v", rec.query, err)
+			}
+			if q.Get("period1") != tt.wantPeriod1 || q.Get("period2") != tt.wantPeriod2 {
+				t.Errorf("period1/period2 = %s/%s, want %s/%s", q.Get("period1"), q.Get("period2"), tt.wantPeriod1, tt.wantPeriod2)
+			}
+			if q.Get("interval") != "1d" || q.Get("events") != "div,splits" || q.Get("includeAdjustedClose") != "true" {
+				t.Errorf("query = %v", q)
+			}
+			if rec.path != "/v8/finance/chart/TQQQ" || len(s.Bars) != 7 || !s.Meta.FetchedAt.Equal(fixtureNow) {
+				t.Errorf("path %s, %d bars, fetchedAt %v", rec.path, len(s.Bars), s.Meta.FetchedAt)
+			}
+		})
+	}
+}
+
+func TestSeriesRangeRejectsInvertedRange(t *testing.T) {
+	rec := &recorder{}
+	c := newTestClient(t, statusSequence(rec, readFixture(t, "tqqq_splits.json"), http.StatusOK))
+	_, err := c.SeriesRange(context.Background(), "TQQQ", date(t, "2022-01-19"), date(t, "2022-01-10"))
+	if err == nil || !strings.Contains(err.Error(), "2022-01-19") || !strings.Contains(err.Error(), "TQQQ") {
+		t.Fatalf("error = %v, want one naming the symbol and the start date", err)
+	}
+	if rec.count() != 0 {
+		t.Errorf("hits = %d, want 0", rec.count())
+	}
+}
+
+func TestSeriesEscapesSymbols(t *testing.T) {
+	tests := []struct {
+		symbol  string
+		wantURI string
+	}{
+		{"^vix", "/v8/finance/chart/%5EVIX?"},
+		{"krw=x", "/v8/finance/chart/KRW=X?"},
+		{"brk-b", "/v8/finance/chart/BRK-B?"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.symbol, func(t *testing.T) {
+			rec := &recorder{}
+			c := newTestClient(t, statusSequence(rec, loadFixture(t), http.StatusOK))
+			if _, err := c.Series(context.Background(), tt.symbol); err != nil {
+				t.Fatalf("Series: %v", err)
+			}
+			if !strings.HasPrefix(rec.uri, tt.wantURI) {
+				t.Errorf("request URI = %q, want prefix %q", rec.uri, tt.wantURI)
+			}
+		})
 	}
 }
 
@@ -177,6 +306,7 @@ func TestClientRetries(t *testing.T) {
 		{name: "persistent 500 gives up after 3", statuses: []int{500}, wantHits: 3, wantStatus: 500},
 		{name: "404 wraps ErrNotFound without retry", statuses: []int{404}, wantHits: 1, wantErr: market.ErrNotFound},
 		{name: "403 is not retried", statuses: []int{403}, wantHits: 1, wantStatus: 403},
+		{name: "401 on the chart is a plain status, not a session problem", statuses: []int{401}, wantHits: 1, wantStatus: 401},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -242,6 +372,9 @@ func TestClientEmptySymbol(t *testing.T) {
 	if _, err := c.Series(context.Background(), "   "); err == nil {
 		t.Fatal("Series accepted an empty symbol")
 	}
+	if _, err := c.SeriesRange(context.Background(), "", time.Time{}, time.Time{}); err == nil {
+		t.Fatal("SeriesRange accepted an empty symbol")
+	}
 	if rec.count() != 0 {
 		t.Errorf("hits = %d, want 0", rec.count())
 	}
@@ -282,6 +415,17 @@ func TestClientContextCancelled(t *testing.T) {
 			t.Errorf("hits = %d, want 1", rec.count())
 		}
 	})
+
+	t.Run("before an authenticated request", func(t *testing.T) {
+		f := newFake(t)
+		c := newFakeClient(t, f)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := c.Quote(ctx, []string{"SPY"}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("error %v does not wrap context.Canceled", err)
+		}
+		assertBootstraps(t, f, 0, 0)
+	})
 }
 
 func TestReadBodyLimit(t *testing.T) {
@@ -309,5 +453,20 @@ func TestExcerpt(t *testing.T) {
 		if got := excerpt([]byte(tt.in)); got != tt.want {
 			t.Errorf("excerpt(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestErrorStrings(t *testing.T) {
+	if got := (&statusError{status: 500}).Error(); got != "unexpected HTTP status 500" {
+		t.Errorf("statusError without body = %q", got)
+	}
+	if got := (&crumbError{status: 401}).Error(); got != "session rejected with HTTP status 401" {
+		t.Errorf("crumbError without body = %q", got)
+	}
+	if got := (&crumbError{status: 401, body: "Invalid Crumb"}).Error(); !strings.Contains(got, "Invalid Crumb") {
+		t.Errorf("crumbError with body = %q", got)
+	}
+	if isRetryable(&crumbError{status: 401}) || isRetryable(errors.New("x")) || !isRetryable(&statusError{status: 503}) {
+		t.Error("isRetryable should hold for 5xx statusErrors only")
 	}
 }

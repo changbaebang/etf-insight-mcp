@@ -1,0 +1,449 @@
+{
+ "quoteSummary": {
+  "result": [
+   {
+    "fundProfile": {
+     "family": "Vanguard",
+     "categoryName": "Intermediate Core Bond",
+     "legalType": "Exchange Traded Fund",
+     "feesExpensesInvestment": {
+      "annualReportExpenseRatio": {
+       "raw": 0.00029999999,
+       "fmt": "0.03%"
+      },
+      "annualHoldingsTurnover": {
+       "raw": 0.38,
+       "fmt": "38.00%"
+      },
+      "totalNetAssets": {
+       "raw": 0.0,
+       "fmt": "0.00"
+      }
+     }
+    },
+    "summaryDetail": {
+     "totalAssets": {
+      "raw": 389050990592,
+      "fmt": "389.05B",
+      "longFmt": "389,050,990,592"
+     },
+     "yield": {
+      "raw": 0.0417,
+      "fmt": "4.17%"
+     },
+     "trailingAnnualDividendRate": {},
+     "trailingAnnualDividendYield": {},
+     "fiftyTwoWeekHigh": {
+      "raw": 75.23,
+      "fmt": "75.23"
+     },
+     "fiftyTwoWeekLow": {
+      "raw": 69.65,
+      "fmt": "69.65"
+     },
+     "fiftyDayAverage": {
+      "raw": 71.5844,
+      "fmt": "71.58"
+     },
+     "twoHundredDayAverage": {
+      "raw": 73.13505,
+      "fmt": "73.14"
+     },
+     "currency": "USD"
+    },
+    "price": {
+     "regularMarketTime": 1791489601,
+     "regularMarketPrice": {
+      "raw": 70.22,
+      "fmt": "70.22"
+     },
+     "exchange": "NGM",
+     "exchangeName": "NasdaqGM",
+     "marketState": "PRE",
+     "quoteType": "ETF",
+     "symbol": "BND",
+     "shortName": "Vanguard Total Bond Market ETF",
+     "longName": "Vanguard Total Bond Market Index Fund ETF Shares",
+     "currency": "USD"
+    },
+    "defaultKeyStatistics": {
+     "category": "Intermediate Core Bond",
+     "fundFamily": "Vanguard",
+     "legalType": "Exchange Traded Fund",
+     "fundInceptionDate": {
+      "raw": 1175558400,
+      "fmt": "2007-04-03"
+     },
+     "beta3Year": {
+      "raw": 0.98,
+      "fmt": "0.98"
+     },
+     "ytdReturn": {
+      "raw": -0.0258728,
+      "fmt": "-2.59%"
+     },
+     "totalAssets": {
+      "raw": 389050990592,
+      "fmt": "389.05B",
+      "longFmt": "389,050,990,592"
+     },
+     "yield": {
+      "raw": 0.0417,
+      "fmt": "4.17%"
+     }
+    },
+    "topHoldings": {
+     "cashPosition": {
+      "raw": 0.0135,
+      "fmt": "1.35%"
+     },
+     "stockPosition": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "bondPosition": {
+      "raw": 0.9864,
+      "fmt": "98.64%"
+     },
+     "otherPosition": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "preferredPosition": {
+      "raw": 0.0,
+      "fmt": "0.00%"
+     },
+     "convertiblePosition": {
+      "raw": 0.0001,
+      "fmt": "0.01%"
+     },
+     "holdings": [],
+     "equityHoldings": {
+      "priceToEarnings": {
+       "raw": 0.0,
+       "fmt": "0"
+      },
+      "priceToBook": {
+       "raw": 0.0,
+       "fmt": "0"
+      },
+      "priceToSales": {
+       "raw": 0.0,
+       "fmt": "0"
+      },
+      "priceToCashflow": {
+       "raw": 0.0,
+       "fmt": "0"
+      },
+      "medianMarketCap": {},
+      "threeYearEarningsGrowth": {},
+      "priceToEarningsCat": {},
+      "priceToBookCat": {},
+      "priceToSalesCat": {},
+      "priceToCashflowCat": {},
+      "medianMarketCapCat": {},
+      "threeYearEarningsGrowthCat": {}
+     },
+     "bondHoldings": {
+      "maturity": {
+       "raw": 9.328,
+       "fmt": "9.33"
+      },
+      "duration": {},
+      "creditQuality": {},
+      "maturityCat": {},
+      "durationCat": {},
+      "creditQualityCat": {}
+     },
+     "bondRatings": [
+      {
+       "bb": {
+        "raw": 0.0001,
+        "fmt": "0.01%"
+       }
+      },
+      {
+       "aa": {
+        "raw": 0.72540003,
+        "fmt": "72.54%"
+       }
+      },
+      {
+       "aaa": {
+        "raw": 0.0309,
+        "fmt": "3.09%"
+       }
+      },
+      {
+       "a": {
+        "raw": 0.120799996,
+        "fmt": "12.08%"
+       }
+      },
+      {
+       "other": {
+        "raw": 0.00029999999,
+        "fmt": "0.03%"
+       }
+      },
+      {
+       "b": {
+        "raw": 0.0,
+        "fmt": "0.00%"
+       }
+      },
+      {
+       "bbb": {
+        "raw": 0.1225,
+        "fmt": "12.25%"
+       }
+      },
+      {
+       "below_b": {
+        "raw": 0.0,
+        "fmt": "0.00%"
+       }
+      },
+      {
+       "us_government": {
+        "raw": 0.5179,
+        "fmt": "51.79%"
+       }
+      }
+     ],
+     "sectorWeightings": []
+    },
+    "fundPerformance": {
+     "fundCategoryName": "Intermediate Core Bond",
+     "trailingReturns": {
+      "asOfDate": {
+       "raw": 1791331200,
+       "fmt": "2026-10-07"
+      },
+      "ytd": {
+       "raw": -0.027491901,
+       "fmt": "-2.75%"
+      },
+      "oneMonth": {
+       "raw": -0.0256496,
+       "fmt": "-2.56%"
+      },
+      "threeMonth": {
+       "raw": -0.0343491,
+       "fmt": "-3.43%"
+      },
+      "oneYear": {
+       "raw": -0.0182159,
+       "fmt": "-1.82%"
+      },
+      "threeYear": {
+       "raw": 0.0403536,
+       "fmt": "4.04%"
+      },
+      "fiveYear": {
+       "raw": -0.0063957,
+       "fmt": "-0.64%"
+      },
+      "tenYear": {
+       "raw": 0.011274801,
+       "fmt": "1.13%"
+      },
+      "lastBullMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      },
+      "lastBearMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      }
+     },
+     "trailingReturnsCat": {
+      "ytd": {
+       "raw": 0.0016405,
+       "fmt": "0.16%"
+      },
+      "oneMonth": {
+       "raw": 0.0020174999,
+       "fmt": "0.20%"
+      },
+      "threeMonth": {
+       "raw": -0.0006809,
+       "fmt": "-0.07%"
+      },
+      "oneYear": {
+       "raw": 0.0412496,
+       "fmt": "4.12%"
+      },
+      "threeYear": {
+       "raw": 0.0359518,
+       "fmt": "3.60%"
+      },
+      "fiveYear": {
+       "raw": 0.0017287999,
+       "fmt": "0.17%"
+      },
+      "tenYear": {
+       "raw": 0.0169628,
+       "fmt": "1.70%"
+      },
+      "lastBullMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      },
+      "lastBearMkt": {
+       "raw": 0.0,
+       "fmt": "0.00%"
+      }
+     },
+     "annualTotalReturns": {
+      "returns": [
+       {
+        "year": "2025",
+        "annualValue": {
+         "raw": 0.0708075,
+         "fmt": "7.08%"
+        }
+       },
+       {
+        "year": "2024",
+        "annualValue": {
+         "raw": 0.0137655,
+         "fmt": "1.38%"
+        }
+       },
+       {
+        "year": "2023",
+        "annualValue": {
+         "raw": 0.0565577,
+         "fmt": "5.66%"
+        }
+       }
+      ],
+      "returnsCat": [
+       {
+        "year": "2025",
+        "annualValue": {
+         "raw": 0.0706747,
+         "fmt": "7.07%"
+        }
+       },
+       {
+        "year": "2024",
+        "annualValue": {
+         "raw": 0.0167634,
+         "fmt": "1.68%"
+        }
+       },
+       {
+        "year": "2023",
+        "annualValue": {
+         "raw": 0.0559096,
+         "fmt": "5.59%"
+        }
+       }
+      ]
+     },
+     "riskOverviewStatistics": {
+      "riskRating": {},
+      "riskStatistics": [
+       {
+        "year": "5y",
+        "alpha": {
+         "raw": -0.06,
+         "fmt": "-0.06"
+        },
+        "beta": {
+         "raw": 0.99,
+         "fmt": "0.99"
+        },
+        "meanAnnualReturn": {
+         "raw": -0.04,
+         "fmt": "-0.04"
+        },
+        "rSquared": {
+         "raw": 99.91,
+         "fmt": "99.91"
+        },
+        "stdDev": {
+         "raw": 6.41,
+         "fmt": "6.41"
+        },
+        "sharpeRatio": {
+         "raw": -0.69,
+         "fmt": "-0.69"
+        },
+        "treynorRatio": {
+         "raw": -4.69,
+         "fmt": "-4.69"
+        }
+       },
+       {
+        "year": "3y",
+        "alpha": {
+         "raw": -0.04,
+         "fmt": "-0.04"
+        },
+        "beta": {
+         "raw": 0.98,
+         "fmt": "0.98"
+        },
+        "meanAnnualReturn": {
+         "raw": 0.34,
+         "fmt": "0.34"
+        },
+        "rSquared": {
+         "raw": 99.94,
+         "fmt": "99.94"
+        },
+        "stdDev": {
+         "raw": 5.5,
+         "fmt": "5.5"
+        },
+        "sharpeRatio": {
+         "raw": -0.08,
+         "fmt": "-0.08"
+        },
+        "treynorRatio": {
+         "raw": -0.6,
+         "fmt": "-0.6"
+        }
+       },
+       {
+        "year": "10y",
+        "alpha": {
+         "raw": -0.01,
+         "fmt": "-0.01"
+        },
+        "beta": {
+         "raw": 1.0,
+         "fmt": "1"
+        },
+        "meanAnnualReturn": {
+         "raw": 0.1,
+         "fmt": "0.1"
+        },
+        "rSquared": {
+         "raw": 99.77,
+         "fmt": "99.77"
+        },
+        "stdDev": {
+         "raw": 5.14,
+         "fmt": "5.14"
+        },
+        "sharpeRatio": {
+         "raw": -0.25,
+         "fmt": "-0.25"
+        },
+        "treynorRatio": {
+         "raw": -1.43,
+         "fmt": "-1.43"
+        }
+       }
+      ]
+     }
+    }
+   }
+  ],
+  "error": null
+ }
+}
