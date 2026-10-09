@@ -7,7 +7,7 @@ of US ETFs and projects the range of outcomes such a plan could have.
 Runs locally as a single Go binary over stdio. No database, no API key.
 
 > Not investment advice. Past performance does not predict future results.
-> The ETF universe is today's top list, so historical results carry
+> The ETF universe is a hand-picked list of funds that exist today, so historical results carry
 > survivorship bias.
 
 ## Status
@@ -29,9 +29,9 @@ plain dollar-cost averaging.
 | `list_etfs` | Which ETFs can I look at? Filters the built-in universe of about 100 widely held funds. No network. | `category`, `issuer`, `query`, `include_leveraged` |
 | `get_etf_info` | What is this fund and how has it behaved? Universe entry, provider metadata, trailing returns (1m to max), 1-year volatility, drawdowns, trailing-12-month dividends, 52-week range and a rule-based trend reading. | `symbol`, `as_of` |
 | `get_price_history` | Give me the bars for a chart or my own calculation. Daily, weekly or monthly close, adjusted close and dividend, thinned to `max_points`. | `symbol`, `start`, `end`, `interval`, `max_points` |
-| `simulate_dca` | What would buying this ETF every day, week or month since a date have done, and how does it compare with SPY? | `symbol`, `amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `reinvest_dividends`, `compare_with` |
+| `simulate_dca` | What would buying this ETF every day, week or month since a date have done, and how does it compare with SPY? | `symbol`, `amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends`, `compare_with` |
 | `simulate_portfolio_dca` | The same for a weighted basket such as 60/40, without rebalancing. Weights may sum to 1 or to 100. | `allocations` (`[{symbol, weight}]`) plus the `simulate_dca` fields |
-| `forecast_dca` | What range of outcomes could the plan have over N years? A block bootstrap of the symbols' own history: p5 to p95 of the final value and return, probability of loss, assumptions in words. Not a price prediction. | `symbol` or `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
+| `forecast_dca` | What range of outcomes could the plan have over N years? A block bootstrap of the symbols' own history: p5 to p95 of the final value and return, probability of loss, assumptions in words. Not a price prediction. | `symbol` or `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
 | `ping` | Is the server alive? Echoes a message with the version. | `message` |
 
 Conventions: dates are `YYYY-MM-DD`; `amount` is the size of one
@@ -173,7 +173,7 @@ something goes wrong.
 - **Changed the code but Claude sees the old tool list**: rebuild, then
   restart the client. Claude Code re-spawns the server on `/mcp` reconnect;
   Desktop needs a full restart.
-- **`claude mcp list` shows nothing**: you are not in the repo root, or you
+- **`claude mcp list` does not show etf-insight**: you are not in the repo root, or you
   declined the trust prompt. Run `claude mcp reset-project-choices` and
   start again.
 - **A symbol returns "not found" although it exists**: Yahoo's chart API

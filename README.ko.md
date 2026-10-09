@@ -8,12 +8,12 @@
 필요 없다.
 
 > 투자 조언이 아니다. 과거의 성과는 미래의 결과를 예측하지 않는다.
-> ETF 유니버스는 오늘 기준의 상위 목록이므로 과거 결과에는 생존 편향이
+> ETF 유니버스는 오늘 존재하는 펀드를 직접 고른 목록이므로 과거 결과에는 생존 편향이
 > 섞여 있다.
 
 ## 상태
 
-여섯 개 도구가 모두 끝까지 동작한다: `list_etfs`, `get_etf_info`,
+여섯 개 도구가 모두 실제로 동작한다: `list_etfs`, `get_etf_info`,
 `get_price_history`, `simulate_dca`, `simulate_portfolio_dca`,
 `forecast_dca` (그리고 `ping`). 여기에 리소스 하나(`etf://universe`)와
 프롬프트 하나(`dca_report`)가 있다. 가격은 Yahoo Finance의 비공식 차트
@@ -26,12 +26,12 @@ API에서 가져오며, 지연 데이터이고 디스크에 캐시된다.
 
 | 도구 | 답하는 질문 | 주요 입력 |
 | --- | --- | --- |
-| `list_etfs` | 어떤 ETF를 볼 수 있나? 널리 거래되는 약 100개 펀드의 내장 유니버스를 걸러 준다. 네트워크를 쓰지 않는다. | `category`, `issuer`, `query`, `include_leveraged` |
+| `list_etfs` | 어떤 ETF를 볼 수 있나? 널리 보유되는 약 100개 펀드의 내장 유니버스를 걸러 준다. 네트워크를 쓰지 않는다. | `category`, `issuer`, `query`, `include_leveraged` |
 | `get_etf_info` | 이 펀드는 무엇이고 어떻게 움직여 왔나? 유니버스 항목, 제공자 메타데이터, 기간별 수익률(1개월~전체), 1년 변동성, 낙폭, 최근 12개월 배당, 52주 범위, 규칙 기반 추세 판정. | `symbol`, `as_of` |
 | `get_price_history` | 차트나 직접 계산에 쓸 가격 데이터를 달라. 일간·주간·월간 종가, 수정 종가, 배당을 `max_points` 개수로 솎아서 돌려준다. | `symbol`, `start`, `end`, `interval`, `max_points` |
-| `simulate_dca` | 이 ETF를 어느 날부터 매일·매주·매월 샀다면 어떻게 됐을까? SPY와 비교하면? | `symbol`, `amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `reinvest_dividends`, `compare_with` |
+| `simulate_dca` | 이 ETF를 어느 날부터 매일·매주·매월 샀다면 어떻게 됐을까? SPY와 비교하면? | `symbol`, `amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends`, `compare_with` |
 | `simulate_portfolio_dca` | 60/40 같은 가중 포트폴리오로 같은 질문. 리밸런싱은 하지 않는다. 가중치 합은 1 또는 100이면 된다. | `allocations` (`[{symbol, weight}]`)와 `simulate_dca`의 입력 |
-| `forecast_dca` | 이 계획을 N년 이어가면 결과 범위는 어떻게 되나? 종목 자신의 과거 수익률을 블록 부트스트랩으로 재추출한다: 최종 가치와 수익률의 p5~p95, 손실 확률, 가정을 문장으로 설명. 가격 예측이 아니다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
+| `forecast_dca` | 이 계획을 N년 이어가면 결과 범위는 어떻게 되나? 종목 자신의 과거 수익률을 블록 부트스트랩으로 재추출한다: 최종 가치와 수익률의 p5~p95, 손실 확률, 가정을 문장으로 설명. 가격 예측이 아니다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
 | `ping` | 서버가 살아 있나? 메시지를 버전과 함께 되돌려 준다. | `message` |
 
 규약: 날짜는 `YYYY-MM-DD`다. `amount`는 지정한 통화(`USD` 또는 `KRW`)로
@@ -86,7 +86,7 @@ make build          # -> ./bin/etf-insight-mcp
 make test
 ```
 
-바이너리는 stdin/stdout으로 MCP를 말한다. 클라이언트 없이도 JSON-RPC 줄을
+바이너리는 stdin/stdout으로 MCP 프로토콜을 주고받는다. 클라이언트 없이도 JSON-RPC 줄을
 파이프로 넣어 찔러 볼 수 있다(응답이 흘러나올 시간을 주기 위해 stdin을 1초
 열어 둔다):
 
@@ -101,7 +101,7 @@ make test
 기대 결과: JSON 두 줄이 나오고, 두 번째 줄에 `"reply":"hello"`가 들어 있다.
 
 실제 시뮬레이션은 처음 쓸 때 네트워크가 필요하므로 stdin을 조금 더 오래
-열어 두고 캐시를 임시 디렉터리로 돌린다:
+열어 두고 캐시 디렉터리를 임시 디렉터리로 지정한다:
 
 ```sh
 ( printf '%s\n%s\n%s\n' \
@@ -173,7 +173,7 @@ Claude Desktop을 재시작한다. 새 대화의 도구 아이콘 아래에 서�
 - **코드를 바꿨는데 Claude가 옛 도구 목록을 본다**: 다시 빌드한 뒤
   클라이언트를 재시작한다. Claude Code는 `/mcp` 재연결 시 서버를 다시 띄우고,
   Desktop은 완전히 재시작해야 한다.
-- **`claude mcp list`에 아무것도 없다**: 저장소 루트가 아니거나 신뢰 프롬프트를
+- **`claude mcp list`에 etf-insight가 없다**: 저장소 루트가 아니거나 신뢰 프롬프트를
   거절한 경우다. `claude mcp reset-project-choices`를 실행하고 다시 시작한다.
 - **존재하는 심볼인데 "not found"가 돌아온다**: Yahoo 차트 API는 상장 폐지되거나
   이름이 바뀐 티커에 404를 주고, 가끔 요청을 제한한다(429, 자동 재시도). 다시
