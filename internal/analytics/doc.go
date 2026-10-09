@@ -1,6 +1,9 @@
-// Package analytics computes descriptive statistics and trend indicators
-// for one price series, and runs a block-bootstrap Monte Carlo that
-// projects the outcome distribution of a recurring-purchase plan.
+// Package analytics computes descriptive statistics, trend readings and
+// technical indicators (RSI, MACD, Bollinger bands, ATR) for one price
+// series, compares several series over their common history (return
+// correlation, beta to a benchmark), scores and ranks series for
+// screening, and runs a block-bootstrap Monte Carlo that projects the
+// outcome distribution of a recurring-purchase plan.
 //
 // Nothing in this package predicts prices. Every number is computed from
 // past bars under assumptions that are spelled out in the doc comments
