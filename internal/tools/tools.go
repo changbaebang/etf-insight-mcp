@@ -59,6 +59,9 @@ type Deps struct {
 	// a symbol was served from a stale file. nil is fine (tests, or a
 	// Source without a cache).
 	Cache *cache.Store
+	// Fund supplies fund descriptions, quotes, search and news. nil means
+	// the fund tools answer with a "not configured" tool error.
+	Fund market.FundSource
 	// Version is reported by ping.
 	Version string
 	// Now returns the current time; nil means time.Now. Tests pin it.
@@ -83,6 +86,11 @@ func Register(s *mcp.Server, deps Deps) {
 	registerForecastDCA(s, deps)
 	registerUniverseResource(s)
 	registerDCAReportPrompt(s, deps)
+	// Round-2 tool groups, each in its own file.
+	deps.registerData(s)
+	deps.registerAnalysis(s)
+	deps.registerSimulations(s)
+	deps.registerOps(s)
 }
 
 // prefetchConcurrency caps the parallel upstream fetches of one call.
