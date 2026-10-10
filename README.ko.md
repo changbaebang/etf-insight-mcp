@@ -5,12 +5,12 @@
 미국 ETF를 소액으로 꾸준히 사 모으는 적립식 투자(dollar-cost averaging)를
 시뮬레이션하고, 그런 계획이 가져올 수 있는 결과의 범위를 추정하는 MCP 서버다.
 시세, 배당, 펀드 정보도 조회하고, ETF를 비교·선별하며, 계획에 드는 비용을
-점검한다. 단일 Go 바이너리가 stdio 위에서 로컬로 동작한다. 데이터베이스도,
+점검한다. 단일 Go 바이너리로 stdio를 통해 로컬에서 동작한다. 데이터베이스도,
 API 키도 필요 없다.
 
-> 투자 조언이 아니다. 과거의 성과는 미래의 결과를 예측하지 않는다.
-> ETF 유니버스는 오늘 존재하는 펀드를 직접 고른 목록이므로 과거 결과에는 생존 편향이
-> 섞여 있다.
+> 투자 조언이 아니다. 과거의 성과로 미래의 결과를 예측할 수는 없다.
+> ETF 유니버스는 현재 존재하는 펀드를 직접 고른 목록이므로 과거 결과에는
+> 생존 편향이 있다.
 
 ## 상태
 
@@ -26,77 +26,86 @@ API 키도 필요 없다.
 
 ## 도구
 
-표는 서버가 도구를 나열하는 순서를 따른다.
+서버는 도구를 알파벳순으로 나열한다. 아래 표는 도구를 용도별로 묶고,
+묶음 안에서는 그 순서를 따른다.
 
 ### 데이터
 
 | 도구 | 답하는 질문 | 주요 입력 |
 | --- | --- | --- |
-| `get_dividends` | 이 펀드는 배당을 얼마나, 얼마나 자주 주고, 늘고 있나? 모든 지급 내역(최근 120건), 최근 12개월 합계와 배당수익률, 빈도 라벨이 붙은 연간 지급 횟수, 연도별 합계, 연간 합계의 5년 증가율. | `symbol`, `start`, `end` |
-| `get_etf_info` | 이 펀드는 무엇이고 어떻게 움직여 왔나? 유니버스 항목, 제공자 메타데이터, 기간별 수익률(1개월~전체), 1년 변동성, 낙폭, 최근 12개월 배당, 52주 범위, 규칙 기반 추세 판정. | `symbol`, `as_of` |
-| `get_fund_performance` | 제공자가 보고한 기준으로 이 펀드는 같은 카테고리와 비교해 어떤가? 기간별·연도별 수익률을 카테고리 평균과 나란히 보여 주고, 3·5·10년 위험 통계(알파, 베타, 샤프, 표준편차, 결정계수, 트레이너)를 준다. | `symbol` |
-| `get_fund_profile` | 이 펀드는 비용이 얼마이고 어떤 펀드인가? 총보수(소수 넷째 자리)와 10,000 보유 시 연간 비용, 운용사, 카테고리, 설정일, 회전율, 순자산, 수익률. | `symbol` |
-| `get_holdings` | 이 펀드는 무엇을 담고 있나? 상위 보유 종목(최대 25개)과 그 합계 비중, 섹터 비중, 주식·채권·현금 구성, 채권 신용등급, 포트폴리오 통계. | `symbol` |
-| `get_news` | 이 움직임을 설명하는 뉴스가 있나? 최근 헤드라인과 매체, 링크, 시각. 헤드라인만 주고 기사 본문은 주지 않는다. | `query`, `limit` |
-| `get_price_history` | 차트나 직접 계산에 쓸 가격 데이터를 달라. 일간·주간·월간 종가, 수정 종가, 배당을 `max_points` 개수로 솎아서 돌려준다. | `symbol`, `start`, `end`, `interval`, `max_points` |
-| `get_quote` | 지금 얼마에 거래되고 있나? 심볼 1~50개의 지연 시세: 가격, 등락, 당일 범위, 거래량, 52주 범위, 50·200일 평균, 시장 상태. 모르는 심볼은 `missing`에 담긴다. | `symbols` |
-| `get_splits` | 원래 주가가 왜 갑자기 뛰었나? 전체 이력의 액면분할과 액면병합(최대 100건). 다른 도구의 가격은 이미 분할이 반영되어 있다. | `symbol` |
-| `list_etfs` | 어떤 ETF를 볼 수 있나? 널리 보유되는 약 125개 펀드의 내장 유니버스를 걸러 준다. 네트워크를 쓰지 않는다. | `category`, `issuer`, `query`, `include_leveraged` |
-| `market_overview` | 오늘 시장은 어떤가? SPY, QQQ, DIA, IWM, VEA, VWO, TLT, BND, GLD와 VIX의 시세와 등락, 그리고 ETF별 추세 상태와 200일 평균 대비 거리. | 없음 |
-| `search_symbols` | 이 펀드의 티커는 무엇인가? 심볼, 이름, 단어로 Yahoo Finance를 검색한다. 기본값은 ETF만이며, `in_universe`는 `list_etfs`가 아는 펀드를 표시한다. | `query`, `limit`, `etf_only` |
+| `get_dividends` | 이 펀드는 배당을 얼마나, 얼마나 자주 주고, 늘고 있나? 모든 지급 내역(최근 120건)을 이후 분할을 반영해 오늘의 주식 수 기준으로 환산해 주고, 분할 전에 실제로 지급된 현금은 `amount_as_paid`로 준다. 최근 52주 합계와 배당수익률, 최근 3개 완전 연도 기준 연간 지급 횟수와 빈도 라벨, 연도별 합계, 연간 합계의 5년 증가율도 준다. | `symbol`, `start`, `end` |
+| `get_etf_info` | 이 펀드는 무엇이고 어떻게 움직여 왔나? 유니버스 항목, 제공자 메타데이터, 기간별 수익률(1개월~전체), 1년 변동성, 낙폭, 최근 52주 배당, 52주 범위, 규칙 기반 추세 판정. 이력이 52주보다 짧을 때, 지수나 환율일 때, `as_of`가 마지막 봉보다 뒤일 때는 경고를 붙인다. | `symbol`, `as_of` |
+| `get_fund_performance` | 제공자 자체 수치로 보면 이 펀드는 어떻게 해 왔나? `trailing_as_of`(보통 직전 월말)까지 잰 기간별 수익률(연초 이후~10년), 카테고리 평균과 나란히 놓은 연도별 수익률, 3·5·10년 위험 통계(알파, 베타, 샤프 지수, 표준편차, 결정계수, 월평균 수익률, 트레이너 지수)를 준다. 알파, 베타, 결정계수는 제공자의 표준 지수를 기준으로 잰다. 펀드가 존재한 기간보다 긴 기간은 null이거나 빠진다. | `symbol` |
+| `get_fund_profile` | 이 펀드는 비용이 얼마이고 어떤 펀드인가? 총보수(소수 넷째 자리, 최신 연차 보고서 기준)와 10,000 보유 시 연간 비용, 운용사, 카테고리, 가격 이력의 첫날(`price_history_from`)과 나란히 놓은 설정일, 회전율, 모든 클래스를 합친 펀드 전체의 순자산, 배당수익률. | `symbol` |
+| `get_holdings` | 이 펀드는 무엇을 담고 있나? 상위 보유 종목(최대 25개)과 그 합계 비중, 펀드 전체 대비 섹터 비중, 주식·채권·현금·기타 구성, 미국 정부 비중을 따로 뗀 채권 신용등급, 그리고 P/E, P/B 같은 주식 통계를 보통의 배수로 준다. 채권 듀레이션과 만기는 보여 주지 않는다. | `symbol` |
+| `get_news` | 이 움직임을 설명하는 뉴스가 있나? 최근 헤드라인과 매체, 링크, 시각. 헤드라인만 주고 기사 본문은 주지 않는다. 검색어는 티커나 라틴 문자로 쓴 단어여야 한다. | `query`, `limit` |
+| `get_price_history` | 차트나 직접 계산에 쓸 가격 데이터를 달라. 일간·주간·월간 종가와 수정 종가를 각 지점의 기간에 지급된 배당과 함께 `max_points` 개수로 솎아서 돌려준다. 남긴 지점은 그 앞에서 솎아 낸 지점들의 배당도 함께 담으므로 배당 열의 합은 실제 지급액과 같다. | `symbol`, `start`, `end`, `interval`, `max_points` |
+| `get_quote` | 지금 얼마에 거래되고 있나? 심볼 1~50개의 지연 시세: 가격, 등락, 당일 범위, 거래량, 52주 범위, 50·200일 평균, 제공자의 최근 배당수익률, 시장 상태, `quote_time`. 모르는 심볼은 `missing`에, 조회에 실패한 심볼은 `failed`에 담긴다. 이전 조회에서 남겨 둔 시세는 `stale`로 표시하고 경고를 붙인다. | `symbols` |
+| `get_splits` | 원래 주가가 왜 갑자기 뛰었나? 전체 이력의 액면분할과 액면병합(최대 100건). 다른 도구의 가격과 배당 금액은 이미 분할이 반영되어 있다. | `symbol` |
+| `list_etfs` | 어떤 ETF를 볼 수 있나? 널리 보유되는 약 125개 펀드의 내장 유니버스를 걸러 준다. `query`의 모든 단어가 심볼, 이름, 운용사, 설명 중 어딘가에 들어 있어야 한다. 네트워크를 쓰지 않는다. | `category`, `issuer`, `query`, `include_leveraged` |
+| `market_overview` | 오늘 시장은 어떤가? SPY, QQQ, DIA, IWM, VEA, VWO, TLT, BND, GLD와 VIX의 시세와 등락, 그리고 ETF별 추세 상태와 200일 평균 대비 거리. 이전 조회에서 남겨 둔 시세는 `stale`로 표시하고 경고를 붙인다. | 없음 |
+| `search_symbols` | 이 펀드의 티커는 무엇인가? 심볼, 이름, 영어 단어로 Yahoo Finance를 검색한다(라틴 문자만). 기본값은 미국 상장 ETF만이며 해외 상장 종목은 메모로 알려 주고, `in_universe`는 `list_etfs`가 아는 펀드를 표시한다. | `query`, `limit`, `etf_only`, `us_only` |
 
 ### 분석
 
 | 도구 | 답하는 질문 | 주요 입력 |
 | --- | --- | --- |
-| `compare_etfs` | 이 펀드들은 어떻게 다른가? ETF 2~10개를 벤치마크(기본 SPY)와 나란히 놓는다: 총보수, 기간별 수익률, 변동성, 낙폭, 배당수익률, 추세, 벤치마크 대비 베타와 상관계수, 그리고 공통 기간의 상관 행렬. | `symbols`, `start`, `end`, `benchmark` |
-| `find_alternatives` | 이 ETF를 꾸준히 사고 있는데, 비슷한 것이 있나? 어떻게 다른가? 유니버스 펀드를 최근 3년 상관계수 순으로, 같으면 총보수가 낮은 순으로 정렬하고, 베타, 총보수 차이, 배당수익률, 수익률, 낙폭, 추적 차이, 한 줄 관찰을 붙인다. 참고용으로 상관이 가장 낮은 펀드 3개도 준다. 조언이 아니라 사실이다. | `symbol`, `limit`, `min_correlation`, `include_other_categories` |
-| `get_technical_indicators` | 특정 날짜에 흔히 쓰는 차트 지표는 어떤가? RSI, MACD, 볼린저 밴드와 %B, ATR, 단순·지수 이동평균, 규칙 충족 여부를 문장으로, 그리고 추세 블록. 가격 경로를 설명할 뿐 매매 신호가 아니다. | `symbol`, `as_of` |
+| `compare_etfs` | 이 펀드들은 어떻게 다른가? USD로 거래되는 ETF 2~10개를 벤치마크(기본 SPY)와 나란히 놓는다: 총보수, 기간별 수익률(1개월~10년), 공통 기간의 수익률과 최대 낙폭, 1년 변동성과 낙폭, 배당수익률, 추세, 벤치마크 대비 베타와 상관계수, 그리고 공통 기간의 상관 행렬. | `symbols`, `start`, `end`, `benchmark` |
+| `find_alternatives` | 이 ETF를 꾸준히 사고 있는데, 비슷한 것이 있나? 어떻게 다른가? 유니버스 펀드를 최근 3년 상관계수 순으로, 같으면 총보수가 낮은 순으로 정렬하고, 베타, 총보수 차이, 배당수익률, 수익률, 낙폭, 추적 차이, 한 줄 관찰을 붙인다. 참고용으로 상관계수가 0.9 미만인 펀드도 최대 3개 준다. 기준 심볼은 USD로 거래되어야 한다. 조언이 아니라 사실이다. | `symbol`, `limit`, `min_correlation`, `include_other_categories` |
+| `get_technical_indicators` | 특정 날짜에 흔히 쓰는 차트 지표는 어떤가? RSI, MACD, 볼린저 밴드와 %B, ATR, 단순·지수 이동평균, 규칙 충족 여부를 문장으로, 그리고 추세 블록. 이력이 모자란 지표는 null이다. 가격 경로를 설명할 뿐 매매 신호가 아니다. | `symbol`, `as_of` |
 | `screen_universe` | 한 지표에서 어떤 펀드가 가장 높은가? 유니버스를 12-1 모멘텀, 1년·3개월 수익률, 변동성, 낙폭, 배당수익률, 200일 평균 대비 거리 중 하나로 정렬한다. 각 행에는 일곱 지표가 모두 들어 있다. 첫 호출은 선별 대상 펀드를 전부 불러온다(10~90초). | `sort_by`, `descending`, `category`, `include_leveraged`, `limit`, `as_of` |
 
 ### 시뮬레이션
 
 | 도구 | 답하는 질문 | 주요 입력 |
 | --- | --- | --- |
-| `forecast_dca` | 이 계획을 N년 이어가면 결과 범위는 어떻게 되나? 종목 자신의 과거 수익률을 블록 부트스트랩으로 재추출한다: 최종 가치와 수익률의 p5~p95, 손실 확률, 가정을 문장으로 설명. 가격 예측이 아니다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
+| `forecast_dca` | 이 계획을 N년 이어가면 결과 범위는 어떻게 되나? 종목 자신의 과거 수익률(최소 1년치)을 블록 부트스트랩으로 재추출한다: 최종 가치와 수익률의 p5~p95, 손실 확률, 가정을 문장으로 설명. 가격 예측이 아니다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `commission_fixed`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
 | `review_dca_plan` | 소액 적립 계획에 실제로 드는 비용은 얼마이고, 비슷한 계획은 어떻게 됐나? ETF 하나를 USD로 사는 계획 하나에 대해 수수료와 총보수를 금액과 비율로, 과거 이력, 실제 이력 기반 단기·장기 결과, 부트스트랩 추정, 사실 관찰을 준다. 추천은 하지 않는다. | `symbol`, `amount`, `cadence`, `horizon_years`, `short_horizon_months`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
 | `simulate_dca` | 이 ETF를 어느 날부터 매일·매주·매월 샀다면 어떻게 됐을까? SPY와 비교하면? | `symbol`, `amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends`, `compare_with` |
-| `simulate_lump_sum_vs_dca` | 한 번에 넣을까, 나눠 넣을까? 같은 총액을 첫날 한꺼번에 넣은 경우와 모든 납입일에 나눠 넣은 경우를 같은 거래일과 같은 수수료로 비교하고 차이를 준다. | `symbol` 또는 `allocations`, `total_amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
-| `simulate_portfolio_dca` | 60/40 같은 가중 포트폴리오로 `simulate_dca`와 같은 질문. 리밸런싱은 하지 않는다. 가중치 합은 1 또는 100이면 된다. | `allocations` (`[{symbol, weight}]`)와 `simulate_dca`의 입력 |
-| `simulate_rolling_dca` | 시작 시점이 얼마나 중요했나? 같은 계획을 이력 안의 모든 N년 구간에 단계마다 하나씩 돌려, 결과의 백분위수, 원금 아래로 끝난 구간의 비율, 가장 좋았던 구간과 나빴던 구간을 준다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `duration_years`, `step_months`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
+| `simulate_lump_sum_vs_dca` | 한 번에 넣을까, 나눠 넣을까? 같은 총액을 첫날 한꺼번에 넣은 경우와 모든 납입일에 나눠 넣은 경우를 같은 거래일과 같은 수수료로 비교하고, 최종 가치와 수익률의 차이를 준다. | `symbol` 또는 `allocations`, `total_amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
+| `simulate_portfolio_dca` | 60/40 같은 가중 포트폴리오로 `simulate_dca`와 같은 질문. 리밸런싱은 하지 않는다. 가중치 합은 1% 오차 안에서 1 또는 100이면 된다. | `allocations` (`[{symbol, weight}]`)와 `simulate_dca`의 나머지 입력(`symbol` 제외) |
+| `simulate_rolling_dca` | 시작 시점이 얼마나 중요했나? 같은 계획을 이력 안의 모든 N년 구간에 단계마다 하나씩, 매번 어느 달의 1일에서 시작해 돌려, 결과의 백분위수, 원금 아래로 끝난 구간의 비율, 가장 좋았던 구간과 나빴던 구간을 준다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `duration_years`, `step_months`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
 
 ### 캐시와 운영
 
 | 도구 | 답하는 질문 | 주요 입력 |
 | --- | --- | --- |
 | `cache_status` | 로컬 캐시에 무엇이 있나? 디렉터리, 파일 수와 크기, 심볼별 봉 개수, 날짜 범위, 마지막 최신화, 마지막 전체 수신, 크기, 마지막 수신 실패, 그리고 경고. 로컬 디스크만 읽는다. | 없음 |
-| `clear_cache` | 일부 심볼 또는 전체 심볼의 캐시 데이터를 지운다. `confirm=true`가 없으면 아무것도 지우지 않고 미리보기를 돌려준다. | `symbols`, `all`, `confirm` |
+| `clear_cache` | 일부 심볼 또는 전체 심볼의 캐시 데이터를 지운다. `confirm=true`가 없으면 아무것도 지우지 않고, 지워질 내용을 미리 보여 주는 도구 오류로 실패한다. | `symbols`, `all`, `confirm` |
 | `ping` | 서버가 살아 있나? 메시지를 버전과 함께 되돌려 준다. | `message` |
-| `refresh_prices` | 캐시 나이와 상관없이 전체 가격 이력을 다시 받는다. 심볼을 주지 않으면 캐시에 있는 모든 심볼을 다시 받고, `universe=true`면 유니버스 전체를 더한다. | `symbols`, `universe` |
+| `refresh_prices` | 캐시 나이와 상관없이 전체 가격 이력을 다시 받는다. 심볼을 주지 않으면 캐시에 있는 모든 심볼을 다시 받고, `universe=true`면 유니버스 전체와 지정한 심볼을 다시 받는다. | `symbols`, `universe` |
 
 규약: 날짜는 `YYYY-MM-DD`이고, 시각(시세 시각, 수신 시각, 뉴스 시각)은
 UTC 기준 RFC 3339다. `amount`는 지정한 통화(`USD` 또는 `KRW`)로 표시한 1회
-납입 금액이다. 금액은 소수 둘째 자리, 주식 수는 넷째 자리까지 반올림한다.
-이름이 `_pct`로 끝나는 필드는 그대로 퍼센트 값이고(7.5는 7.5%), 총보수는
-소수 넷째 자리까지 유지한다(0.0945). 조언으로 읽힐 수 있는 출력에는
-`disclaimer` 필드가 들어 있다. `clear_cache`와 `refresh_prices`를 뺀 모든
-도구는 읽기 전용으로 표시된다. 모르는 심볼과 잘못된 입력은 무엇을 고쳐야
-하는지 알려 주는 도구 오류로 돌아오므로 모델이 스스로 바로잡을 수 있다.
+납입 금액이다. 금액은 소수 둘째 자리, 주식 수와 주당 금액(배당, 지표 값)은
+넷째 자리까지 반올림한다. 이름이 `_pct`로 끝나는 필드는 그대로 퍼센트
+값이고(7.5는 7.5%), 총보수는 소수 넷째 자리까지 유지한다(0.0945).
+시뮬레이션과 비교 도구는 USD로 거래되는 펀드(미국 상장 종목)만 받는다.
+시뮬레이션의 주식 수는 종료일에 실제로 보유한 주식 수이고, 타임라인은
+최대 120개 지점이다(월말, 기간이 길면 분기말이나 연말이며 `timeline_step`이
+어느 쪽인지 알려 준다). 조언으로 읽힐 수 있는 출력에는 `disclaimer` 필드가
+들어 있다. `clear_cache`와 `refresh_prices`를 뺀 모든 도구는 읽기 전용으로
+표시된다. 모르는 심볼과 잘못된 입력은 무엇을 고쳐야 하는지 알려 주는 도구
+오류로 돌아오므로 모델이 스스로 바로잡을 수 있다.
 
 그 밖에 리소스 `etf://universe`(유니버스 CSV)와 프롬프트
-`dca_report`(`symbol`, `amount`, `currency`, `start`)를 제공한다. 이 프롬프트는
-모델에게 `get_etf_info`, `simulate_dca`, `forecast_dca`를 차례로 실행하고
-면책 문구로 끝나는 짧은 보고서를 쓰도록 지시한다.
+`dca_report`(`symbol`, `amount`, `currency`, `start`, `cadence`,
+`fee_rate`, `commission_fixed`)를 제공한다. 이 프롬프트는 모델에게
+`get_etf_info`, `get_fund_profile`, `get_holdings`, `simulate_dca`,
+`forecast_dca`를 그 비용으로 차례로 실행하고 면책 문구로 끝나는 짧은
+보고서를 쓰도록 지시한다. 기본값으로는 3년 전에 시작한 매일 적립 계획을
+비용 없이 점검한다.
 
 ### 소액 매일 매수에서는 비용이 중요하다
 
 거래 비용은 두 입력으로 반영한다. `fee_rate`는 매수 금액에 대한 비율이다
-(0.001은 0.1%). `commission_fixed`는 매수할 때마다 `fee_rate` 다음에 붙는
-계획 통화 기준 고정 금액이다. `simulate_dca`,
-`simulate_portfolio_dca`(심볼마다가 아니라 납입마다 한 번),
-`simulate_lump_sum_vs_dca`(일시 투자는 한 번, 적립 쪽은 매수마다 한 번),
-`simulate_rolling_dca`, `review_dca_plan`은 둘 다 받는다. `forecast_dca`는
-`fee_rate`만 받는다.
+(0.001은 0.1%). `commission_fixed`는 주문마다 `fee_rate` 다음에 붙는 계획
+통화 기준 고정 금액이다. 증권사가 하듯 한 번의 납입이 사는 ETF마다 한 번씩
+붙으므로, ETF 세 개로 나눈 납입은 세 번 낸다. 납입액 중 ETF마다 돌아가는
+몫은 이 수수료보다 커야 한다. 모든 시뮬레이션 도구가 두 입력을 받는다.
+`simulate_lump_sum_vs_dca`는 일시 투자에서 ETF마다 한 번, 적립 쪽에서는
+납입일마다 ETF마다 한 번 수수료를 매긴다. `forecast_dca`는 이를
+`fee_rate + (number of ETFs × commission_fixed) / amount`로 수수료율에 합친다.
 
 고정 수수료는 소액 매수에 크게 작용한다. 매 거래일 ETF를 5 USD씩 사고
 매번 0.99 USD를 수수료로 내면 매수 금액의 19.8%가 수수료로 나간다. 1년
@@ -117,50 +126,68 @@ Yahoo Finance에서 가져온다. 모두 지연 데이터다. KRW 계획은 같�
 `~/Library/Caches/etf-insight-mcp`(또는 `-cache-dir`나
 `$ETF_INSIGHT_CACHE_DIR`로 지정한 디렉터리)에 `<SYMBOL>.json`으로 한 번만
 저장한다. 6시간(`-cache-ttl`) 안에는 네트워크 호출 없이 파일을 그대로 쓴다.
-그 뒤에는 끝부분만 받는다. 마지막으로 캐시된 봉보다 7일 앞에서부터 요청해
-겹치는 날을 파일과 대조한 다음 새 봉을 덧붙인다. 끝부분에 새로 생기거나
-바뀐 배당, 새 분할, 다시 쓰인 가격, 바뀐 거래일이 보이면(모두 과거의 수정
-가격을 바꾼다) 덧붙이는 대신 전체 이력을 다시 받는다. 그렇지 않더라도
-마지막 전체 수신이 30일(`-full-refresh-days`)을 넘기면 전체를 다시 받는다.
-다운로드가 실패했는데 파일이 있으면 그 파일을 쓰고 도구 결과에 경고를
-붙인다.
+그 뒤에는 끝부분만 받는다. 마지막으로 캐시된 봉보다 7일 앞에서부터 요청하고,
+받은 끝부분에는 그때부터 마지막 캐시 봉까지의 캐시된 날이 모두 있어야 하며,
+그중 가장 최근 날을 뺀 하루 이상의 가격을 파일과 대조한 다음 새 봉을
+덧붙인다. 캐시된 날이 끝부분에 빠져 있거나 대조할 날이 없을 때, 끝부분에
+새로 생기거나 바뀐 배당, 새 분할, 다시 쓰인 가격, 바뀐 거래일이 보일
+때(모두 과거의 수정 가격을 바꾼다)는 덧붙이는 대신 전체 이력을 다시 받는다.
+그렇지 않더라도 마지막 전체 수신이 30일(`-full-refresh-days`)을 넘기면
+전체를 다시 받는다. 예외가 하나 있다. 장 마감 직후에는 제공자가 캐시의 가장
+최근 날을 아직 내놓지 않았을 수 있다. 그보다 새로운 봉도 오지 않았다면 장중에
+받아 둔 그 봉을 버리고, 다음 최신화 때 확정된 봉을 받는다. 다운로드가
+실패했는데 파일이 있으면 그 파일을 쓰고 도구 결과에 경고를 붙인다.
 
 펀드 정보는 같은 디렉터리의 `fund/` 아래에 심볼과 종류별로 파일 하나씩
 (`<SYMBOL>.profile.json`, `<SYMBOL>.holdings.json`,
 `<SYMBOL>.performance.json`) 두고 24시간 동안 재사용한다. 시세는 메모리에
-15분 동안 보관하며, 검색과 뉴스는 캐시하지 않는다.
+15분 동안 보관하며, 갱신이 실패하면 마지막 시세를 `stale`로 표시해 보여
+준다. 검색과 뉴스는 캐시하지 않는다.
 
 대화 안에서 캐시를 다루는 도구는 셋이다:
 
-- `cache_status`는 로컬 디스크만 읽는다. `warnings`는 읽을 수 없는 파일,
-  수신이나 쓰기 실패, 10 MiB보다 큰 파일, 90일 동안 받지 않은 파일, 150개를
-  넘는 파일 수, 합계 300 MiB 초과를 알린다.
+- `cache_status`는 로컬 디스크만 읽는다. `warnings`는 읽을 수 없는
+  파일(잘린 파일 포함), 가격 수신이나 쓰기 실패, 10 MiB보다 큰 파일, 90일
+  동안 받지 않은 파일, 150개를 넘는 파일 수, 합계 300 MiB 초과, 심볼릭
+  링크인 `fund/` 디렉터리(세지도 지우지도 않는다)를 알린다. 펀드 파일의
+  수신이나 쓰기 실패는 추적하지 않는다.
 - `clear_cache`는 지정한 심볼의 가격 파일과 펀드 파일을 지우고, `all=true`면
   모든 심볼의 파일을 지운다. `confirm=true`가 필요하며, 없으면 아무것도
-  지우지 않고 지워질 파일 수와 바이트를 미리 보여 준다.
+  지우지 않고 지워질 가격·펀드 파일 수와 바이트를 메시지로 미리 보여 주는
+  도구 오류로 실패한다.
 - `refresh_prices`는 지정한 심볼의 전체 이력을 다시 받아 파일을 바꾼다.
   심볼을 주지 않으면 이미 캐시된 모든 심볼을 다시 받고, `universe=true`면
-  유니버스의 모든 심볼을 더한다(동시에 4개, 호출당 최대 200개). 다운로드가
-  실패하면 이전 파일을 그대로 둔다.
+  유니버스의 모든 심볼과 지정한 심볼을 다시 받되 그 밖의 캐시된 심볼은
+  건드리지 않는다(동시에 4개, 호출당 최대 200개). 다운로드가 실패하거나
+  받은 이력을 파일에 쓰지 못하면 이전 파일을 그대로 두고 그 행에
+  `ok=false`를 표시한다. 같은 심볼의 최신화가 진행 중이면 그것이 끝나기를
+  기다린 뒤 전체 이력을 받는다.
 
-플래그:
+플래그(`make build`가 `./bin`에 만드는 바이너리 기준이며, `make install`
+뒤에는 `$(go env GOPATH)/bin/etf-insight-mcp`다):
 
 ```sh
-etf-insight-mcp -cache-dir DIR          # default: $ETF_INSIGHT_CACHE_DIR, else ~/Library/Caches/etf-insight-mcp
-etf-insight-mcp -cache-ttl 6h           # how long a cached symbol is reused before it is topped up
-etf-insight-mcp -full-refresh-days 30   # days of top-ups before the whole history is fetched again
-etf-insight-mcp -clear-cache            # delete every file the server wrote in the cache directory and exit
-etf-insight-mcp -version                # print the version and exit
+./bin/etf-insight-mcp -cache-dir DIR          # default: $ETF_INSIGHT_CACHE_DIR, else ~/Library/Caches/etf-insight-mcp
+./bin/etf-insight-mcp -cache-ttl 6h           # how long a cached symbol is reused before it is topped up
+./bin/etf-insight-mcp -full-refresh-days 30   # days of top-ups before the whole history is fetched again (1 to 36500)
+./bin/etf-insight-mcp -clear-cache            # delete every file the server wrote in the cache directory, for all symbols, and exit
+./bin/etf-insight-mcp -version                # print the version and exit
 ```
 
-`-clear-cache`는 서버가 쓴 파일(가격 파일, 펀드 파일, 남은 임시 파일)만
-지우고 지운 내용을 stderr로 알린다. 예를 들어
-[로컬 빌드와 실행](#로컬-빌드와-실행)의 `simulate_dca` 스모크 테스트를 돌린
-뒤라면 이렇게 나온다:
+`-clear-cache`는 묻지 않고 모든 심볼의 캐시를 한꺼번에 지운다. 심볼 하나만
+지우려면 `clear_cache`에 `symbols`와 `confirm=true`를 준다. 지우는 것은
+서버가 쓴 파일뿐이다. 이름과 파일 앞머리의 캐시 헤더로 알아본 가격 파일과
+펀드 파일, 그리고 10분 넘게 남아 있는 서버 자신의 임시 파일이다. 다른
+프로그램의 `*.tmp` 파일이나 직접 만든 `2024-01-01.json` 같은 다른 파일은
+그대로 두며, 심볼릭 링크인 `fund/` 디렉터리는 따라가지 않는다. 서버는
+시작할 때마다 10분이 지난 자신의 임시 파일도 정리한다. `-clear-cache`는
+실제로 지운 내용을 stderr로 알리고, 지우지 못한 것은 `still there:` 뒤에
+적는다(종료 코드 1). 예를 들어 [로컬 빌드와 실행](#로컬-빌드와-실행)의
+`simulate_dca` 스모크 테스트를 돌린 뒤라면 이렇게 나온다:
 
 ```sh
 $ ./bin/etf-insight-mcp -cache-dir /tmp/etf-insight-cache -clear-cache
-etf-insight-mcp: removed 3 files (3376445 bytes) from /tmp/etf-insight-cache
+etf-insight-mcp: removed 3 files (3377013 bytes) from /tmp/etf-insight-cache
   price history: KRW=X, SPY, VOO
 ```
 
@@ -181,7 +208,7 @@ etf-insight-mcp: removed 3 files (3376445 bytes) from /tmp/etf-insight-cache
 
 ## 요구 사항
 
-- Go 1.27+ (`brew install go`)
+- Go 1.27.1+ (`brew install go`)
 - 선택: `make lint`용 `golangci-lint` v2
 
 ## 로컬 빌드와 실행
@@ -224,7 +251,8 @@ make test
 ## Claude Code 연결
 
 저장소에는 `./bin/etf-insight-mcp`를 가리키는 프로젝트 범위의
-[`.mcp.json`](.mcp.json)이 들어 있다. 한 번 빌드한 뒤 저장소 디렉터리 안에서
+[`.mcp.json`](.mcp.json)이 들어 있다. 이 경로는 Claude Code를 시작한
+디렉터리를 기준으로 한 상대 경로다. 한 번 빌드한 뒤 저장소 루트에서
 Claude Code를 시작한다:
 
 ```sh
@@ -249,7 +277,9 @@ make install                                   # -> ~/go/bin/etf-insight-mcp
 claude mcp add --scope user etf-insight -- "$(go env GOPATH)/bin/etf-insight-mcp"
 ```
 
-제거는 `claude mcp remove etf-insight`로 한다.
+이 등록은 `claude mcp remove --scope user etf-insight`로 제거한다.
+`--scope` 없이 저장소 루트에서 실행하면 프로젝트의 `.mcp.json`에 있는 같은
+이름도 대상이 되어, 명령이 거부되거나 그 파일이 다시 쓰인다.
 
 ## Claude Desktop 연결
 
@@ -274,21 +304,27 @@ Claude Desktop을 재시작한다. 새 대화의 도구 아이콘 아래에 서�
 
 ## 문제 해결
 
-- **"Failed to connect"**: 터미널에서 바이너리를 직접 실행해 본다. stderr에
-  Go 오류가 찍히면 그것이 원인이다. 그냥 기다리기만 하면 설정의 경로가 틀렸을
-  가능성이 크다.
+- **"Failed to connect"**: `claude mcp list`가 `./bin/etf-insight-mcp`에
+  대해 이렇게 보여 주면 Claude Code를 저장소 루트에서 시작했는지, `make build`를
+  실행했는지 확인한다. 이 경로는 Claude Code를 시작한 디렉터리를 기준으로
+  하므로 하위 디렉터리에서 시작하면 연결에 실패한다. 그렇지 않다면
+  터미널에서 바이너리를 직접 실행해 본다. stderr에 Go 오류가 찍히면 그것이
+  원인이다. 그냥 기다리기만 하면 설정의 경로가 틀렸을 가능성이 크다.
 - **코드를 바꿨는데 Claude가 옛 도구 목록을 본다**: 다시 빌드한 뒤
   클라이언트를 재시작한다. Claude Code는 `/mcp` 재연결 시 서버를 다시 띄우고,
   Desktop은 완전히 재시작해야 한다.
-- **`claude mcp list`에 etf-insight가 없다**: 저장소 루트가 아니거나 신뢰 프롬프트를
-  거절한 경우다. `claude mcp reset-project-choices`를 실행하고 다시 시작한다.
-- **존재하는 심볼인데 "not found"가 돌아온다**: Yahoo 차트 API는 상장 폐지되거나
-  이름이 바뀐 티커에 404를 주고, 가끔 요청을 제한한다(429, 자동 재시도). 다시
-  시도하거나, 그 심볼에 `refresh_prices`를 요청해 전체를 강제로 다시 받는다.
+- **`claude mcp list`에 etf-insight가 없다**: Claude Code를 저장소 밖에서
+  시작했거나 신뢰 프롬프트를 거절한 경우다.
+  `claude mcp reset-project-choices`를 실행하고 다시 시작한다.
+- **존재하는 심볼인데 "not found"가 돌아온다**: "not found"는 Yahoo가 404로
+  답했다는 뜻이다. 티커를 모르거나, 상장 폐지되었거나, 이름이 바뀐 경우이므로
+  `search_symbols`로 찾아본다. 요청 제한은 HTTP 429 오류로 따로 나타나고 자동으로
+  재시도되며, 나중에 다시 시도하면 풀린다.
 - **캐시된 가격이 틀렸거나 오래돼 보인다**: `cache_status`를 요청해 심볼마다
   언제 받았는지, 수신이 실패했는지 확인한 뒤 그 심볼에 `refresh_prices`를
-  요청한다. 파일을 아예 지우려면 `clear_cache`(또는 터미널에서
-  `etf-insight-mcp -clear-cache`)를 쓴다.
+  요청한다. 그 대신 심볼 하나의 파일을 지우려면 `clear_cache`에 `symbols`와
+  `confirm=true`를 준다. 터미널에서 `./bin/etf-insight-mcp -clear-cache`를
+  실행하면 묻지 않고 모든 심볼의 캐시를 지운다.
 
 ## 개발
 
@@ -299,5 +335,5 @@ make lint    # golangci-lint v2
 make vet
 ```
 
-PR 하나가 도구 하나 또는 Go 개념 하나를 추가한다. CI는 vet, 테스트, lint를
-실행한다.
+변경은 한 번에 도구 하나 또는 Go 개념 하나를 추가하는 것을 목표로 한다.
+CI는 vet, 테스트, lint를 실행한다.
