@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/changbaebang/etf-insight-mcp/internal/cache"
 	"github.com/changbaebang/etf-insight-mcp/internal/market"
 	"github.com/changbaebang/etf-insight-mcp/internal/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -71,7 +75,7 @@ func TestServerRoundTrip(t *testing.T) {
 	for _, tool := range list.Tools {
 		names = append(names, tool.Name)
 	}
-	for _, want := range []string{"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "forecast_dca"} {
+	for _, want := range []string{"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "forecast_dca", "cache_status", "clear_cache", "refresh_prices"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("tool %s is not listed; got %v", want, names)
 		}
@@ -86,6 +90,16 @@ func TestServerRoundTrip(t *testing.T) {
 	}
 	if info.IsError {
 		t.Fatalf("get_etf_info returned tool error: %+v", info.Content)
+	}
+
+	// Without a cache (Deps.Cache nil) the ops tools answer with a tool
+	// error, not a crash.
+	status, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: "cache_status"})
+	if err != nil {
+		t.Fatalf("call cache_status: %v", err)
+	}
+	if !status.IsError {
+		t.Errorf("cache_status without a cache = %+v, want a tool error", status.StructuredContent)
 	}
 }
 
@@ -104,5 +118,109 @@ func TestCheckCacheDir(t *testing.T) {
 	}
 	if err := checkCacheDir(blocked); err == nil {
 		t.Error("a regular file must not pass as a cache directory")
+	}
+}
+
+func TestParseFlags(t *testing.T) {
+	c, err := parseFlags(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if c.cacheDir != "" || c.cacheTTL != defaultCacheTTL || c.fullRefreshDays != 30 || c.fullRefreshInterval() != 30*24*time.Hour || c.clearCache || c.showVersion {
+		t.Errorf("defaults = %+v", c)
+	}
+
+	c, err = parseFlags([]string{"-cache-dir", "/tmp/x", "-cache-ttl", "90m", "-full-refresh-days", "7", "-clear-cache"}, io.Discard)
+	if err != nil {
+		t.Fatalf("explicit flags: %v", err)
+	}
+	if c.cacheDir != "/tmp/x" || c.cacheTTL != 90*time.Minute || c.fullRefreshDays != 7 || !c.clearCache {
+		t.Errorf("explicit flags = %+v", c)
+	}
+
+	bad := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"-full-refresh-days", "0"}, want: "-full-refresh-days must be at least 1"},
+		{args: []string{"-cache-ttl", "0s"}, want: "-cache-ttl must be positive"},
+		{args: []string{"serve"}, want: `unexpected argument "serve"`},
+	}
+	for _, tt := range bad {
+		if _, err := parseFlags(tt.args, io.Discard); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("parseFlags(%v) error = %v, want %q", tt.args, err, tt.want)
+		}
+	}
+}
+
+func TestRealMain(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		code       int
+		stdout     string
+		stderrHas  string
+		stderrNone bool
+	}{
+		{name: "version", args: []string{"-version"}, code: 0, stdout: version + "\n", stderrNone: true},
+		{name: "help", args: []string{"-h"}, code: 0, stderrHas: "-full-refresh-days"},
+		{name: "unknown flag", args: []string{"-nope"}, code: 2, stderrHas: "flag provided but not defined: -nope"},
+		{name: "bad value", args: []string{"-cache-ttl", "soon"}, code: 2, stderrHas: "invalid value"},
+		{name: "nonsense value", args: []string{"-full-refresh-days", "-3"}, code: 2, stderrHas: "etf-insight-mcp: -full-refresh-days must be at least 1"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			code := realMain(tt.args, &stdout, &stderr)
+			if code != tt.code || stdout.String() != tt.stdout {
+				t.Errorf("exit %d stdout %q, want %d %q", code, stdout.String(), tt.code, tt.stdout)
+			}
+			if tt.stderrNone && stderr.Len() > 0 {
+				t.Errorf("stderr = %q, want nothing", stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.stderrHas) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.stderrHas)
+			}
+		})
+	}
+}
+
+func TestRealMainClearCache(t *testing.T) {
+	dir := t.TempDir()
+	store := cache.New(fakeSource{}, dir, time.Hour)
+	if _, err := store.Series(context.Background(), "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	fundDoc := filepath.Join(dir, "fund", "SPY.profile.json")
+	if err := os.MkdirAll(filepath.Dir(fundDoc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fundDoc, []byte(`{"version":1,"fetched_at":"2024-01-05T00:00:00Z","data":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(dir, "README.txt")
+	if err := os.WriteFile(stray, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := realMain([]string{"-clear-cache", "-cache-dir", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if stdout.Len() > 0 {
+		t.Errorf("stdout = %q, want nothing (stdout is the MCP transport)", stdout.String())
+	}
+	for _, want := range []string{"removed 2 files", "from " + dir, "price history: SPY", "fund documents: 1 file"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want it to contain %q", stderr.String(), want)
+		}
+	}
+	for _, gone := range []string{filepath.Join(dir, "SPY.json"), fundDoc} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists (err %v)", gone, err)
+		}
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Errorf("a file the server did not write was removed: %v", err)
 	}
 }
