@@ -132,10 +132,14 @@ type RiskStats struct {
 
 // Performance is provider-reported fund performance.
 type Performance struct {
-	Symbol    string
-	Trailing  []PeriodReturn
-	Annual    []AnnualReturn
-	Risk      []RiskStats
+	Symbol   string
+	Trailing []PeriodReturn
+	Annual   []AnnualReturn
+	Risk     []RiskStats
+	// AsOf is the date the fund's trailing returns are measured to, as
+	// best the provider lets it be determined (typically the last
+	// month-end); zero when unknown. Category figures may be older.
+	AsOf      time.Time
 	FetchedAt time.Time
 }
 
