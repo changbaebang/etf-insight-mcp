@@ -38,15 +38,23 @@ const Disclaimer = "Not investment advice. Every figure is computed from past pr
 
 // Instructions is the server-level guidance sent to clients when they
 // connect. Keep it in sync with the tool set.
-const Instructions = `etf-insight-mcp simulates small recurring purchases (dollar-cost averaging, DCA) of US-listed ETFs and projects the range of outcomes such a plan could have.
+const Instructions = `etf-insight-mcp answers questions about small recurring purchases (dollar-cost averaging, DCA) of US-listed ETFs: what a plan would have done, what range of outcomes it could have, what it costs, and which similar funds exist.
 
-Data: daily closes, adjusted closes and dividends come from Yahoo Finance's unofficial chart API. Quotes are delayed and each symbol is cached on disk (6 hours by default), so numbers can lag the market by up to a day. KRW plans use the KRW=X rate (KRW per 1 USD) from the same source. Symbols outside the built-in universe work too when Yahoo knows them.
+Data: daily prices, dividends and splits come from Yahoo Finance's unofficial chart API; fund descriptions (expense ratio, holdings, provider performance), quotes, search and news come from its quote endpoints. Prices are delayed. Price history is stored on disk once (~/Library/Caches/etf-insight-mcp) and afterwards only the newest bars are fetched; fund documents are cached for a day and quotes for 15 minutes. KRW plans use the KRW=X rate (KRW per 1 USD). Symbols outside the built-in universe work when Yahoo knows them.
 
-Units: amount is the size of ONE contribution in the plan currency (USD or KRW) before fees, e.g. 100 USD every trading day or 300000 KRW every month. Money fields are rounded to 2 decimals and share counts to 4. Every field ending in _pct is a plain percentage (7.5 means 7.5%). Dates are YYYY-MM-DD.
+Units: amount is ONE contribution in the plan currency (USD or KRW) before costs. fee_rate is a fraction of each contribution and commission_fixed a fixed amount per purchase; for small daily purchases the fixed commission is usually the largest cost. Money is rounded to 2 decimals and share counts to 4. Fields ending in _pct are plain percentages (7.5 means 7.5%). Dates are YYYY-MM-DD; timestamps are RFC 3339 UTC.
 
-Typical flow: list_etfs to find candidates; get_etf_info for a snapshot (trailing returns, volatility, drawdowns, dividends, trend); simulate_dca or simulate_portfolio_dca to see what the plan would have done, with SPY as the default baseline; forecast_dca for the outcome range a block bootstrap of history gives. get_price_history returns the bars when a chart or a custom calculation is needed. The etf://universe resource is the universe CSV and the dca_report prompt chains the three main tools into a short write-up.
+Which tool:
+- Find funds: list_etfs (built-in universe), search_symbols (anything Yahoo knows), screen_universe (rank the universe by momentum, returns, volatility, drawdown, dividend yield or trend).
+- Describe one fund: get_etf_info (returns, volatility, drawdowns, dividends, trend), get_fund_profile (expense ratio, assets, inception), get_holdings, get_fund_performance, get_dividends, get_splits, get_technical_indicators, get_price_history, get_quote, get_news.
+- Compare: compare_etfs (side by side, with correlation and beta to a benchmark), find_alternatives (funds similar to one you hold, with cost and return differences), market_overview (major ETFs and the VIX today).
+- Simulate the past: simulate_dca and simulate_portfolio_dca (with an SPY comparison on the same days), simulate_lump_sum_vs_dca, simulate_rolling_dca (the plan from every historical start date).
+- Look ahead: forecast_dca, a block bootstrap of history that gives a range of outcomes, not a price prediction.
+- "Is my plan reasonable?": review_dca_plan splits a plan into costs, history, a short-term and a long-term view; follow it with find_alternatives.
+- Cache: cache_status (files, size, warnings), refresh_prices (refetch now), clear_cache (deletes files, needs confirm=true).
+The etf://universe resource is the universe CSV, and the dca_report prompt chains get_etf_info, simulate_dca and forecast_dca into a short write-up.
 
-Errors are returned as tool errors whose message says what to change (an unknown symbol points at list_etfs, a bad date shows the expected format).
+Errors come back as tool errors whose message says what to change (an unknown symbol points at list_etfs, a bad date shows the expected format).
 
 ` + Disclaimer
 
@@ -77,6 +85,8 @@ func Register(s *mcp.Server, deps Deps) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
+	// recoverPanics runs first so it also catches a panic in emptyArguments.
+	s.AddReceivingMiddleware(recoverPanics, emptyArguments)
 	registerPing(s, deps)
 	registerListETFs(s)
 	registerGetETFInfo(s, deps)
@@ -285,6 +295,11 @@ func uniqueSymbols(symbols []string) []string {
 // staleWarnings reports, for sym, whether the cache served a stale file
 // after an upstream failure and whether fresh data could not be cached.
 // Both are empty without a cache or after a clean, persisted fetch.
+//
+// Call it only for symbols whose series reached the caller: a failed cold
+// fetch records an upstream error too, and the wording would then claim
+// that a cached file was served. Report a failed symbol's fetch error
+// instead.
 func (d Deps) staleWarnings(sym string) []string {
 	if d.Cache == nil {
 		return nil
