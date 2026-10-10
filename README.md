@@ -23,7 +23,8 @@ disk and brought up to date incrementally; fund data is cached for a day.
 
 `project_dca_outcomes` was called `forecast_dca` until 2026-10-10. It
 projects a range of outcomes from resampled history and never forecasts
-prices, so the name now says what it does.
+prices, so the name now says what it does. A call to the old name
+returns an error that names the new one.
 
 Next: trend-based allocation rules (for example "buy only while the price
 is above its 200-day average") and comparisons of those rules against
@@ -156,7 +157,8 @@ A bar fetched while its trading session is still open is an intraday
 price, not a close. The data source marks it, every tool whose figures
 use that bar says so in its warnings or notes, and the cache treats the
 file as stale as soon as the session ends, so the next read brings the
-settled close.
+settled close. A bar stamped after the last session, such as a weekend
+quote for `KRW=X`, is left out.
 
 Loading many symbols for the first time takes a while: a cold
 `screen_universe` fetches about 126 histories. Tools that load several
