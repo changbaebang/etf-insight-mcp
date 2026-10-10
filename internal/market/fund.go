@@ -49,8 +49,10 @@ type Quote struct {
 	FiftyTwoWeekHigh     float64
 	FiftyDayAverage      float64
 	TwoHundredDayAverage float64
-	// DividendYield is the trailing annual dividend yield as a fraction
-	// (0.012 = 1.2%).
+	// DividendYield is the provider's dividend yield as a fraction (0.012 =
+	// 1.2%): for a fund its trailing twelve-month distribution yield, for a
+	// stock the forward annual dividend over the price; 0 when not
+	// reported.
 	DividendYield float64
 	AsOf          time.Time
 }
@@ -96,7 +98,7 @@ type Holdings struct {
 	StockPct    *float64 // fractions of the portfolio
 	BondPct     *float64
 	CashPct     *float64
-	OtherPct    *float64
+	OtherPct    *float64           // includes preferred and convertible positions
 	EquityStats map[string]float64 // e.g. "priceToEarnings", "priceToBook"
 	BondStats   map[string]float64 // e.g. "duration", "maturity"
 	FetchedAt   time.Time

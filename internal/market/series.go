@@ -25,12 +25,15 @@ type Bar struct {
 	Open, High, Low float64
 	// Volume is the number of shares traded; 0 when not reported.
 	Volume int64
-	// Close is the raw closing price in the series currency.
+	// Close is the closing price in the series currency, restated for later
+	// splits (the provider divides closes before a split by its ratio) but
+	// not adjusted for dividends.
 	Close float64
 	// AdjClose is the dividend- and split-adjusted close. Buying and valuing
 	// with AdjClose models dividends reinvested on the pay date.
 	AdjClose float64
-	// Dividend is the cash dividend per share paid on this date, 0 if none.
+	// Dividend is the cash dividend per share paid on this date, restated
+	// for later splits like Close; 0 if none.
 	Dividend float64
 }
 
