@@ -14,7 +14,14 @@ import (
 )
 
 // toolNames is every tool Register must expose.
-var toolNames = []string{"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "forecast_dca"}
+var toolNames = []string{
+	"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "forecast_dca",
+	// data
+	"search_symbols", "get_quote", "get_dividends", "get_splits", "get_fund_profile", "get_holdings", "get_fund_performance", "get_news", "market_overview",
+}
+// mutatingTools change the local cache, so they must not claim to be
+// read-only; clear_cache also deletes files.
+var mutatingTools = map[string]bool{"clear_cache": true, "refresh_prices": true}
 
 func TestToolsAreListedWithDescriptions(t *testing.T) {
 	sess := newSession(t, testDeps(newFakeSource()))
@@ -35,8 +42,16 @@ func TestToolsAreListedWithDescriptions(t *testing.T) {
 		if tool.Description == "" {
 			t.Errorf("tool %s has no description", name)
 		}
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+		switch {
+		case tool.Annotations == nil:
+			t.Errorf("tool %s has no annotations", name)
+		case mutatingTools[name] && tool.Annotations.ReadOnlyHint:
+			t.Errorf("tool %s changes the cache but is marked read-only", name)
+		case !mutatingTools[name] && !tool.Annotations.ReadOnlyHint:
 			t.Errorf("tool %s is not marked read-only", name)
+		}
+		if name == "clear_cache" && (tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint) {
+			t.Error("clear_cache must be marked destructive")
 		}
 		schema, ok := tool.InputSchema.(map[string]any)
 		if !ok {
