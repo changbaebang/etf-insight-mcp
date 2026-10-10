@@ -21,6 +21,10 @@ API 키도 필요 없다.
 데이터다. 가격 이력은 디스크에 캐시하고 증분으로 최신화하며, 펀드 정보는
 하루 동안 캐시한다.
 
+`project_dca_outcomes`는 2026-10-10까지 `forecast_dca`라는 이름이었다.
+재추출한 과거로 결과의 범위를 보여 줄 뿐 가격을 예측하지 않으므로, 하는 일을
+그대로 말하는 이름으로 바꿨다.
+
 다음 단계: 추세 기반 배분 규칙(예: "가격이 200일 이동평균 위에 있을 때만
 산다")과 그 규칙을 단순 적립식 투자와 비교하는 기능이다.
 
@@ -59,7 +63,7 @@ API 키도 필요 없다.
 
 | 도구 | 답하는 질문 | 주요 입력 |
 | --- | --- | --- |
-| `forecast_dca` | 이 계획을 N년 이어가면 결과 범위는 어떻게 되나? 종목 자신의 과거 수익률(최소 1년치)을 블록 부트스트랩으로 재추출한다: 최종 가치와 수익률의 p5~p95, 손실 확률, 가정을 문장으로 설명. 가격 예측이 아니다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `commission_fixed`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
+| `project_dca_outcomes` | 이 계획을 N년 이어가면 결과 범위는 어떻게 되나? 종목 자신의 과거 수익률(최소 1년치)을 블록 부트스트랩으로 재추출한다: 최종 가치와 수익률의 p5~p95, 손실 확률, 가정을 문장으로 설명. 가격 예측이 아니다. | `symbol` 또는 `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `commission_fixed`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
 | `review_dca_plan` | 소액 적립 계획에 실제로 드는 비용은 얼마이고, 비슷한 계획은 어떻게 됐나? ETF 하나를 USD로 사는 계획 하나에 대해 수수료와 총보수를 금액과 비율로, 과거 이력, 실제 이력 기반 단기·장기 결과, 부트스트랩 추정, 사실 관찰을 준다. 추천은 하지 않는다. | `symbol`, `amount`, `cadence`, `horizon_years`, `short_horizon_months`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
 | `simulate_dca` | 이 ETF를 어느 날부터 매일·매주·매월 샀다면 어떻게 됐을까? SPY와 비교하면? | `symbol`, `amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends`, `compare_with` |
 | `simulate_lump_sum_vs_dca` | 한 번에 넣을까, 나눠 넣을까? 같은 총액을 첫날 한꺼번에 넣은 경우와 모든 납입일에 나눠 넣은 경우를 같은 거래일과 같은 수수료로 비교하고, 최종 가치와 수익률의 차이를 준다. | `symbol` 또는 `allocations`, `total_amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
@@ -92,7 +96,7 @@ UTC 기준 RFC 3339다. `amount`는 지정한 통화(`USD` 또는 `KRW`)로 표�
 `dca_report`(`symbol`, `amount`, `currency`, `start`, `cadence`,
 `fee_rate`, `commission_fixed`)를 제공한다. 이 프롬프트는 모델에게
 `get_etf_info`, `get_fund_profile`, `get_holdings`, `simulate_dca`,
-`forecast_dca`를 그 비용으로 차례로 실행하고 면책 문구로 끝나는 짧은
+`project_dca_outcomes`를 그 비용으로 차례로 실행하고 면책 문구로 끝나는 짧은
 보고서를 쓰도록 지시한다. 기본값으로는 3년 전에 시작한 매일 적립 계획을
 비용 없이 점검한다.
 
@@ -104,7 +108,7 @@ UTC 기준 RFC 3339다. `amount`는 지정한 통화(`USD` 또는 `KRW`)로 표�
 붙으므로, ETF 세 개로 나눈 납입은 세 번 낸다. 납입액 중 ETF마다 돌아가는
 몫은 이 수수료보다 커야 한다. 모든 시뮬레이션 도구가 두 입력을 받는다.
 `simulate_lump_sum_vs_dca`는 일시 투자에서 ETF마다 한 번, 적립 쪽에서는
-납입일마다 ETF마다 한 번 수수료를 매긴다. `forecast_dca`는 이를
+납입일마다 ETF마다 한 번 수수료를 매긴다. `project_dca_outcomes`는 이를
 `fee_rate + (number of ETFs × commission_fixed) / amount`로 수수료율에 합친다.
 
 고정 수수료는 소액 매수에 크게 작용한다. 매 거래일 ETF를 5 USD씩 사고
@@ -137,6 +141,20 @@ Yahoo Finance에서 가져온다. 모두 지연 데이터다. KRW 계획은 같�
 최근 날을 아직 내놓지 않았을 수 있다. 그보다 새로운 봉도 오지 않았다면 장중에
 받아 둔 그 봉을 버리고, 다음 최신화 때 확정된 봉을 받는다. 다운로드가
 실패했는데 파일이 있으면 그 파일을 쓰고 도구 결과에 경고를 붙인다.
+
+거래 세션이 아직 열려 있을 때 받은 봉은 종가가 아니라 장중 가격이다.
+데이터 소스가 그 봉을 표시하고, 그 봉을 쓰는 도구는 모두 경고나 메모로
+알리며, 캐시는 세션이 끝나는 즉시 그 파일을 오래된 것으로 보고 다음 조회 때
+확정 종가를 받는다.
+
+여러 심볼을 처음 받을 때는 시간이 걸린다. 캐시가 빈 상태의
+`screen_universe`는 약 126개의 이력을 받는다. 여러 심볼을 받는 도구는
+클라이언트가 진행 토큰으로 요청하면 심볼마다 MCP 진행 알림을 보낸다.
+`refresh_prices`도 마찬가지다.
+
+펀드 데이터 소스가 설정일을 알려 주면 `get_etf_info`, `get_fund_profile`,
+`review_dca_plan`은 가격 이력이 그보다 훨씬 앞서 시작하거나(SMH 초기 가격의
+바탕인 Semiconductor HOLDRS 같은 전신 상품) 훨씬 뒤에 시작할 때 경고한다.
 
 펀드 정보는 같은 디렉터리의 `fund/` 아래에 심볼과 종류별로 파일 하나씩
 (`<SYMBOL>.profile.json`, `<SYMBOL>.holdings.json`,
@@ -320,6 +338,9 @@ Claude Desktop을 재시작한다. 새 대화의 도구 아이콘 아래에 서�
   답했다는 뜻이다. 티커를 모르거나, 상장 폐지되었거나, 이름이 바뀐 경우이므로
   `search_symbols`로 찾아본다. 요청 제한은 HTTP 429 오류로 따로 나타나고 자동으로
   재시도되며, 나중에 다시 시도하면 풀린다.
+- **도구 호출이 "invalid arguments"로 실패한다**: 메시지가 어느 입력이 왜
+  틀렸는지 알려 준다. 입력이 빠졌거나, 형식이 틀렸거나, 허용 범위를 벗어났거나,
+  `simulate_portfolio_dca`가 받는 `allocations`처럼 다른 도구의 입력이다.
 - **캐시된 가격이 틀렸거나 오래돼 보인다**: `cache_status`를 요청해 심볼마다
   언제 받았는지, 수신이 실패했는지 확인한 뒤 그 심볼에 `refresh_prices`를
   요청한다. 그 대신 심볼 하나의 파일을 지우려면 `clear_cache`에 `symbols`와

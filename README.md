@@ -21,6 +21,10 @@ together with one resource (`etf://universe`) and one prompt
 from Yahoo Finance's unofficial APIs, delayed. Price history is cached on
 disk and brought up to date incrementally; fund data is cached for a day.
 
+`project_dca_outcomes` was called `forecast_dca` until 2026-10-10. It
+projects a range of outcomes from resampled history and never forecasts
+prices, so the name now says what it does.
+
 Next: trend-based allocation rules (for example "buy only while the price
 is above its 200-day average") and comparisons of those rules against
 plain dollar-cost averaging.
@@ -60,7 +64,7 @@ by purpose and keep that order within each group.
 
 | Tool | What it answers | Key inputs |
 | --- | --- | --- |
-| `forecast_dca` | What range of outcomes could the plan have over N years? A block bootstrap of the symbols' own history (at least one year of it): p5 to p95 of the final value and return, probability of loss, assumptions in words. Not a price prediction. | `symbol` or `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `commission_fixed`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
+| `project_dca_outcomes` | What range of outcomes could the plan have over N years? A block bootstrap of the symbols' own history (at least one year of it): p5 to p95 of the final value and return, probability of loss, assumptions in words. Not a price prediction. | `symbol` or `allocations`, `amount`, `currency`, `cadence`, `horizon_years`, `fee_rate`, `commission_fixed`, `simulations`, `seed`, `block_length`, `lookback_years`, `expected_annual_return_pct` |
 | `review_dca_plan` | What does my small recurring plan really cost, and how have plans like it done? One USD plan of one ETF: commission and expense ratio as amounts and percentages, history, short-term and long-term outcomes from real history, a bootstrap projection and factual observations. Never recommends. | `symbol`, `amount`, `cadence`, `horizon_years`, `short_horizon_months`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
 | `simulate_dca` | What would buying this ETF every day, week or month since a date have done, and how does it compare with SPY? | `symbol`, `amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends`, `compare_with` |
 | `simulate_lump_sum_vs_dca` | Invest it all now or spread it out? The same total put in on the first day versus split over every contribution day, on one calendar with the same fees, and the difference in final value and return. | `symbol` or `allocations`, `total_amount`, `currency`, `cadence`, `start`, `end`, `fee_rate`, `commission_fixed`, `reinvest_dividends` |
@@ -95,7 +99,7 @@ Also exposed: the resource `etf://universe` (the universe as CSV) and the
 prompt `dca_report` (`symbol`, `amount`, `currency`, `start`, `cadence`,
 `fee_rate`, `commission_fixed`), which asks the model to run
 `get_etf_info`, `get_fund_profile`, `get_holdings`, `simulate_dca` and
-`forecast_dca` with those costs and write a short report that ends with
+`project_dca_outcomes` with those costs and write a short report that ends with
 the disclaimer. By default it reviews a daily plan started three years
 ago, without costs.
 
@@ -109,7 +113,7 @@ ETFs pays it three times, and each ETF's share of the contribution must
 be larger than it. Every simulation tool accepts both.
 `simulate_lump_sum_vs_dca` charges the commission once per ETF for the
 lump sum and once per ETF on every contribution day for the DCA leg;
-`forecast_dca` folds it into the fee rate as
+`project_dca_outcomes` folds it into the fee rate as
 `fee_rate + (number of ETFs × commission_fixed) / amount`.
 
 A flat commission weighs heavily on small purchases. Buying 5 USD of an
@@ -147,6 +151,22 @@ published the newest cached day; when nothing newer has arrived either,
 that bar, captured during the session, is dropped and the next top-up
 brings the settled one. When a download fails and a file exists, the file
 is served and the tool result carries a warning.
+
+A bar fetched while its trading session is still open is an intraday
+price, not a close. The data source marks it, every tool whose figures
+use that bar says so in its warnings or notes, and the cache treats the
+file as stale as soon as the session ends, so the next read brings the
+settled close.
+
+Loading many symbols for the first time takes a while: a cold
+`screen_universe` fetches about 126 histories. Tools that load several
+symbols send MCP progress notifications, one per symbol, when the client
+asks for them with a progress token; `refresh_prices` does the same.
+
+When the fund data source reports an inception date, `get_etf_info`,
+`get_fund_profile` and `review_dca_plan` warn if the price history starts
+long before it (a predecessor product, such as the Semiconductor HOLDRS
+behind the early SMH prices) or long after it.
 
 Fund data lives under `fund/` in the same directory, one file per symbol
 and kind (`<SYMBOL>.profile.json`, `<SYMBOL>.holdings.json`,
@@ -335,6 +355,10 @@ something goes wrong.
   Yahoo answered 404, so the ticker is unknown, delisted or renamed; look
   it up with `search_symbols`. Rate limits show up as HTTP 429 errors
   instead, are retried automatically, and pass if you try again later.
+- **A tool call fails with "invalid arguments"**: the message names the
+  input and what is wrong with it: a missing input, a wrong type, a value
+  outside its bounds, or an input that belongs to another tool, such as
+  `allocations`, which `simulate_portfolio_dca` takes.
 - **Cached prices look wrong or out of date**: ask for `cache_status` to
   see when each symbol was last fetched and whether a fetch failed, then
   `refresh_prices` for the symbol. To delete one symbol's files instead,
