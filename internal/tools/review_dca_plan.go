@@ -231,7 +231,8 @@ func (d Deps) reviewDCAPlan(ctx context.Context, in reviewDCAPlanInput) (reviewD
 	var historyWarning string
 	out.LongTerm, historyWarning = reviewLongTerm(ctx, f, plan, simIn, in)
 	out.Observations = reviewObservations(f, out, summary, fullYear)
-	out.Warnings = d.planWarnings(plan, simIn)
+	// The projection starts from every series' last bar, so it reads it.
+	out.Warnings = d.planWarnings(plan, simIn, time.Time{})
 	if profile != nil {
 		first, _ := series.First()
 		last, _ := series.Last()

@@ -122,7 +122,7 @@ func (d Deps) compareETFs(ctx context.Context, in compareETFsInput) (compareETFs
 		ETFs:              make([]compareETFRow, 0, len(symbols)),
 		CorrelationMatrix: make([][]float64, len(symbols)),
 		Notes:             compareNotes(series, cmp, start),
-		Warnings:          append(append(d.analysisCacheWarnings(symbols), ratioWarnings...), nonEmpty(provisionalSummary(loaded, symbols))...),
+		Warnings:          append(append(d.analysisCacheWarnings(symbols), ratioWarnings...), nonEmpty(provisionalSummary(loaded, symbols, func(string) time.Time { return cmp.To }))...),
 		Disclaimer:        Disclaimer,
 	}
 	for i, row := range cmp.Correlation {

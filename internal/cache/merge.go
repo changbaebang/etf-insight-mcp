@@ -92,6 +92,7 @@ func mergeTail(base, tail *market.Series, from time.Time) (*market.Series, error
 		merged.Bars[len(keep)-1] = overlap[len(overlap)-1]
 	}
 	merged.Bars = append(merged.Bars, fresh...)
+	merged.Meta.ProvisionalUntil = mergedProvisional(base, tail, merged)
 	if err := merged.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: merged series: %w", errNeedFull, err)
 	}
@@ -204,10 +205,25 @@ func refreshMeta(have, got market.Meta) market.Meta {
 	if !got.FetchedAt.IsZero() {
 		have.FetchedAt = got.FetchedAt
 	}
-	// The tail ends with the latest bar, so its provisional state is the
-	// series' state now (zero once the session has closed).
-	have.ProvisionalUntil = got.ProvisionalUntil
 	return have
+}
+
+// mergedProvisional decides whether merged still ends on an intraday bar:
+// the tail's state when the tail supplied the merged last bar, the
+// cache's when the cached last bar survived untouched (an empty tail), and
+// none when that bar was dropped and an earlier, settled one is last.
+func mergedProvisional(base, tail, merged *market.Series) time.Time {
+	last, ok := merged.Last()
+	if !ok {
+		return time.Time{}
+	}
+	if tl, ok := tail.Last(); ok && tl.Date.Equal(last.Date) {
+		return tail.Meta.ProvisionalUntil
+	}
+	if bl, ok := base.Last(); ok && bl.Date.Equal(last.Date) {
+		return base.Meta.ProvisionalUntil
+	}
+	return time.Time{}
 }
 
 // day formats t as a calendar date for error messages.

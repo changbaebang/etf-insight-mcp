@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/changbaebang/etf-insight-mcp/internal/sim"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -165,7 +166,7 @@ func (d Deps) simulateRollingDCA(ctx context.Context, in simulateRollingDCAInput
 		rollingStatsOutput: stats,
 		Windows:            make([]rollingWindowOutput, 0, len(shown)),
 		WindowsDownsampled: len(shown) < res.Count,
-		Notes:              append(notes, d.planWarnings(plan, simIn)...),
+		Notes:              append(notes, d.planWarnings(plan, simIn, lastWindowEnd(res))...),
 		Disclaimer:         Disclaimer,
 	}
 	for _, w := range shown {
@@ -265,4 +266,15 @@ func scaleMap(m map[string]float64, factor float64) map[string]float64 {
 		out[k] = round2(v * factor)
 	}
 	return out
+}
+
+// lastWindowEnd is the latest date any rolling window read.
+func lastWindowEnd(res *sim.RollingResult) time.Time {
+	var end time.Time
+	for _, w := range res.Windows {
+		if w.End.After(end) {
+			end = w.End
+		}
+	}
+	return end
 }

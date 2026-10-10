@@ -164,7 +164,7 @@ func (d Deps) simulateLumpSumVsDCA(ctx context.Context, in simulateLumpSumVsDCAI
 		out.Notes = append(out.Notes, lumpSumRatesNote)
 	}
 	out.Notes = append(out.Notes, lumpSumDrawdownNote)
-	out.Notes = append(out.Notes, d.planWarnings(plan, simIn)...)
+	out.Notes = append(out.Notes, d.planWarnings(plan, simIn, res.DCA.End)...)
 	return out, nil
 }
 

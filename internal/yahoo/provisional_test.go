@@ -45,3 +45,23 @@ func TestParseChartMarksIntradayLastBar(t *testing.T) {
 		t.Errorf("without a trading period: ProvisionalUntil = %v, err %v; want zero", s.Meta.ProvisionalUntil, err)
 	}
 }
+
+// TestParseChartDropsBarsAfterTheSession: KRW=X on a Saturday carries a bar
+// stamped at the live quote's time, after Friday's session; it is not a
+// close and is dropped.
+func TestParseChartDropsBarsAfterTheSession(t *testing.T) {
+	m := map[string]any{"symbol": "KRW=X", "exchangeTimezoneName": "Europe/London",
+		"currentTradingPeriod": map[string]any{"regular": map[string]any{"start": utc(2026, 10, 8, 23, 0), "end": utc(2026, 10, 9, 22, 59)}}}
+	ts := []int64{utc(2026, 10, 7, 23, 0), utc(2026, 10, 8, 23, 0), utc(2026, 10, 10, 3, 30)} // Thu, Fri (London), Saturday quote
+	closes := []any{f(1400), f(1410), f(1412)}
+	s, err := parseChart([]byte(payload(m, ts, closes, closes, nil)), time.Unix(utc(2026, 10, 10, 8, 0), 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Len() != 2 {
+		t.Fatalf("bars = %d, want 2 (the Saturday quote dropped)", s.Len())
+	}
+	if last, _ := s.Last(); last.Close != 1410 || !s.Meta.ProvisionalUntil.IsZero() {
+		t.Errorf("last bar = %+v, provisional until %v; want Friday's settled 1410", last, s.Meta.ProvisionalUntil)
+	}
+}

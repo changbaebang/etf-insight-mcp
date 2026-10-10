@@ -52,7 +52,7 @@ Which tool:
 - Look ahead: project_dca_outcomes, a block bootstrap of history that gives a range of outcomes, not a price prediction.
 - "Is my plan reasonable?": review_dca_plan splits a plan into costs, history, a short-term and a long-term view; follow it with find_alternatives.
 - Cache: cache_status (files, size, warnings), refresh_prices (refetch now), clear_cache (deletes files, needs confirm=true).
-The etf://universe resource is the universe CSV, and the dca_report prompt chains get_etf_info, get_fund_profile, get_holdings, simulate_dca and project_dca_outcomes into a short write-up. Simulation, forecast, review and comparison tools accept only funds quoted in USD.
+The etf://universe resource is the universe CSV, and the dca_report prompt chains get_etf_info, get_fund_profile, get_holdings, simulate_dca and project_dca_outcomes into a short write-up. Simulation, projection, review and comparison tools accept only funds quoted in USD.
 
 Errors come back as tool errors whose message says what to change (an unknown symbol points at list_etfs and search_symbols, a bad date shows the expected format).
 
@@ -86,7 +86,7 @@ func Register(s *mcp.Server, deps Deps) {
 		deps.Now = time.Now
 	}
 	// recoverPanics runs first so it also catches a panic in the others.
-	s.AddReceivingMiddleware(recoverPanics, emptyArguments, explainArgumentErrors, attachProgress)
+	s.AddReceivingMiddleware(recoverPanics, emptyArguments, redirectRenamedTools, explainArgumentErrors, attachProgress)
 	registerPing(s, deps)
 	registerListETFs(s)
 	registerGetETFInfo(s, deps)
@@ -120,7 +120,7 @@ func readOnly(title string, openWorld bool) *mcp.ToolAnnotations {
 func checkFinite(what string, values ...float64) error {
 	for _, v := range values {
 		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return fmt.Errorf("%s is not a finite number; reduce amount, horizon or expected_annual_return_pct", what)
+			return fmt.Errorf("%s is not a finite number; reduce amount, horizon_years or expected_annual_return_pct", what)
 		}
 	}
 	return nil
@@ -272,7 +272,7 @@ func (d Deps) fetchAll(ctx context.Context, symbols []string) (map[string]*marke
 	if d.Cache != nil && len(syms) > 1 {
 		// One concurrent pass; the series come back from the same call so a
 		// symbol that could not be written to disk is not fetched twice.
-		got, failed := d.Cache.PrefetchNotify(ctx, syms, prefetchConcurrency, func(sym string) { prog.step(sym, "loaded") })
+		got, failed := d.Cache.PrefetchNotify(ctx, syms, prefetchConcurrency, func(sym string, err error) { prog.step(sym, outcome(err)) })
 		for _, sym := range syms {
 			switch {
 			case failed[sym] != nil:
@@ -287,7 +287,7 @@ func (d Deps) fetchAll(ctx context.Context, symbols []string) (map[string]*marke
 	}
 	for _, sym := range syms {
 		s, err := d.fetchSeries(ctx, sym)
-		prog.step(sym, "loaded")
+		prog.step(sym, outcome(err))
 		if err != nil {
 			errs[sym] = err
 			continue

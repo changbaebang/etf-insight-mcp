@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -67,5 +68,16 @@ func TestMultiSymbolToolsReportProgress(t *testing.T) {
 	case n := <-notes:
 		t.Errorf("unexpected notification without a token: %+v", n)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestProgressNamesFailures(t *testing.T) {
+	var msgs []string
+	p := &progress{send: func(_, _ int, msg string) { msgs = append(msgs, msg) }}
+	p.add(2)
+	p.step("SPY", outcome(nil))
+	p.step("NOPE", outcome(errors.New("not found")))
+	if len(msgs) != 2 || msgs[0] != "SPY loaded (1 of 2)" || msgs[1] != "NOPE failed (2 of 2)" {
+		t.Errorf("messages = %q", msgs)
 	}
 }

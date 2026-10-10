@@ -20,10 +20,10 @@ func (s *Store) Prefetch(ctx context.Context, symbols []string, concurrency int)
 }
 
 // PrefetchNotify is Prefetch that also calls done, when it is not nil,
-// once for every symbol whose fetch finished, successfully or not, from
-// the goroutine that fetched it. Callers use it to report progress on
-// long batches.
-func (s *Store) PrefetchNotify(ctx context.Context, symbols []string, concurrency int, done func(symbol string)) (map[string]*market.Series, map[string]error) {
+// once for every symbol whose fetch finished, with that fetch's error (nil
+// on success), from the goroutine that fetched it. Callers use it to
+// report progress on long batches.
+func (s *Store) PrefetchNotify(ctx context.Context, symbols []string, concurrency int, done func(symbol string, err error)) (map[string]*market.Series, map[string]error) {
 	concurrency = max(concurrency, 1)
 	var (
 		wg     sync.WaitGroup
@@ -60,7 +60,7 @@ func (s *Store) PrefetchNotify(ctx context.Context, symbols []string, concurrenc
 			}
 			mu.Unlock()
 			if done != nil {
-				done(sym)
+				done(sym, err)
 			}
 		}()
 	}

@@ -178,7 +178,7 @@ func (d Deps) projectDCA(ctx context.Context, in projectDCAInput) (projectDCAOut
 	if err != nil {
 		return projectDCAOutput{}, userError(err)
 	}
-	if err := checkFinite("forecast", append([]float64{res.Invested, res.MeanFinal}, mapValues(res.Percentiles)...)...); err != nil {
+	if err := checkFinite("projection", append([]float64{res.Invested, res.MeanFinal}, mapValues(res.Percentiles)...)...); err != nil {
 		return projectDCAOutput{}, err
 	}
 
@@ -223,7 +223,7 @@ func (d Deps) projectDCA(ctx context.Context, in projectDCAInput) (projectDCAOut
 	}
 	for _, sym := range fetch {
 		out.Warnings = append(out.Warnings, d.staleWarnings(sym)...)
-		out.Warnings = append(out.Warnings, nonEmpty(provisionalNote(series[sym], time.Time{}))...)
+		out.Warnings = append(out.Warnings, nonEmpty(provisionalNote(series[sym], time.Time{}, d.clock()))...)
 	}
 	return out, nil
 }

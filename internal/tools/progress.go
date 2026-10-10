@@ -91,3 +91,11 @@ func progressCallback(ctx context.Context, verb string) func(done, total int, it
 		p.step(item, verb)
 	}
 }
+
+// outcome is the verb a progress message uses for one item.
+func outcome(err error) string {
+	if err != nil {
+		return "failed"
+	}
+	return "loaded"
+}

@@ -248,7 +248,7 @@ func (d Deps) findAlternatives(ctx context.Context, in findAlternativesInput) (f
 		DifferentExposure:  finish(different),
 		Skipped:            skipped,
 		Notes:              notes,
-		Warnings:           append(append(d.analysisCacheWarnings(fetched), ratioWarnings...), nonEmpty(provisionalSummary(loaded, fetched))...),
+		Warnings:           append(append(d.analysisCacheWarnings(fetched), ratioWarnings...), nonEmpty(provisionalSummary(withSeries(loaded, baseSym, base), fetched, nil))...),
 		Disclaimer:         Disclaimer,
 	}, nil
 }
@@ -521,4 +521,14 @@ func altNotes(baseSym string, base *market.Series, known bool, window altSpan) [
 		notes = append(notes, fmt.Sprintf("%s is not in the built-in universe, so it has no category; the broad US equity categories and every bond category were searched", baseSym))
 	}
 	return notes
+}
+
+// withSeries returns m plus sym mapped to s, without modifying m.
+func withSeries(m map[string]*market.Series, sym string, s *market.Series) map[string]*market.Series {
+	out := make(map[string]*market.Series, len(m)+1)
+	for k, v := range m {
+		out[k] = v
+	}
+	out[sym] = s
+	return out
 }

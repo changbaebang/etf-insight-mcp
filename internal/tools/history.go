@@ -66,9 +66,10 @@ func instrumentNote(s *market.Series) string {
 
 // provisionalNote says that s's last bar is an intraday price, when the
 // figures the caller reports rely on it: used is the last date they read,
-// zero meaning the last bar. It is "" when the last bar is a settled close
-// or is not used.
-func provisionalNote(s *market.Series, used time.Time) string {
+// zero meaning the last bar. now tells whether the session has ended since
+// (the settled close is then fetched by the next request). It is "" when
+// the last bar is a settled close or is not used.
+func provisionalNote(s *market.Series, used, now time.Time) string {
 	if s == nil {
 		return ""
 	}
@@ -77,24 +78,37 @@ func provisionalNote(s *market.Series, used time.Time) string {
 	if until.IsZero() || !ok || (!used.IsZero() && used.Before(last.Date)) {
 		return ""
 	}
-	return fmt.Sprintf("%s's latest bar (%s) is an intraday price fetched at %s, while that session was still open, not the close; the cache fetches the settled close once the session ends at %s",
-		s.Meta.Symbol, formatDate(last.Date), s.Meta.FetchedAt.UTC().Format("2006-01-02 15:04 UTC"), until.UTC().Format("15:04 UTC"))
+	note := fmt.Sprintf("%s's latest bar (%s) is an intraday price fetched at %s, while that session was still open, not the close",
+		s.Meta.Symbol, formatDate(last.Date), s.Meta.FetchedAt.UTC().Format("2006-01-02 15:04 UTC"))
+	if now.Before(until) {
+		return note + fmt.Sprintf("; after the session ends at %s the next request fetches the settled close", until.UTC().Format("2006-01-02 15:04 UTC"))
+	}
+	return note + fmt.Sprintf("; the session ended at %s but the settled close has not been fetched yet (refresh_prices fetches it now)", until.UTC().Format("2006-01-02 15:04 UTC"))
 }
 
 // provisionalSummary is provisionalNote for a multi-symbol answer: one
-// line naming every symbol of symbols whose latest bar is intraday, or ""
-// when none is.
-func provisionalSummary(series map[string]*market.Series, symbols []string) string {
+// line naming every symbol of symbols whose latest bar is intraday and is
+// read by the answer. usedFor gives the last date the answer reads for a
+// symbol (zero: its last bar); nil means the last bar for every symbol.
+func provisionalSummary(series map[string]*market.Series, symbols []string, usedFor func(sym string) time.Time) string {
 	var intraday []string
 	for _, sym := range symbols {
-		if s := series[sym]; s != nil && !s.Meta.ProvisionalUntil.IsZero() {
-			intraday = append(intraday, sym)
+		s := series[sym]
+		if s == nil || s.Meta.ProvisionalUntil.IsZero() {
+			continue
 		}
+		if usedFor != nil {
+			last, ok := s.Last()
+			if used := usedFor(sym); ok && !used.IsZero() && used.Before(last.Date) {
+				continue
+			}
+		}
+		intraday = append(intraday, sym)
 	}
 	if len(intraday) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("latest bars of %s are intraday prices fetched while the session was still open, not closes; the cache fetches the settled closes once the session ends", strings.Join(intraday, ", "))
+	return fmt.Sprintf("latest bars of %s are intraday prices fetched while the session was still open, not closes; the first request after the session ends fetches the settled closes", strings.Join(intraday, ", "))
 }
 
 // nonEmpty returns the non-empty strings of notes, for appending optional

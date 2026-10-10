@@ -405,8 +405,9 @@ func (d Deps) loadInput(ctx context.Context, plan sim.Plan, extra ...string) (si
 // investable fund (an index, an exchange rate), and the cache warnings of
 // every symbol the plan depends on, its allocations and, for a KRW plan,
 // the exchange rate, plus a note for each of them whose latest bar is an
-// intraday price the plan reads.
-func (d Deps) planWarnings(plan sim.Plan, in sim.Input) []string {
+// intraday price the plan reads: used is the last date the run read (its
+// End), or zero when it read every series up to its last bar.
+func (d Deps) planWarnings(plan sim.Plan, in sim.Input, used time.Time) []string {
 	var out []string
 	for _, a := range plan.Allocations {
 		if note := instrumentNote(in.Series[a.Symbol]); note != "" {
@@ -415,11 +416,11 @@ func (d Deps) planWarnings(plan sim.Plan, in sim.Input) []string {
 	}
 	for _, a := range plan.Allocations {
 		out = append(out, d.staleWarnings(a.Symbol)...)
-		out = append(out, nonEmpty(provisionalNote(in.Series[a.Symbol], plan.End))...)
+		out = append(out, nonEmpty(provisionalNote(in.Series[a.Symbol], used, d.clock()))...)
 	}
 	if plan.Currency == sim.CurrencyKRW {
 		out = append(out, d.staleWarnings(fxSymbol)...)
-		out = append(out, nonEmpty(provisionalNote(in.FX, plan.End))...)
+		out = append(out, nonEmpty(provisionalNote(in.FX, used, d.clock()))...)
 	}
 	return out
 }
@@ -456,7 +457,7 @@ func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (sim
 		return simulation{}, err
 	}
 	out := simulation{result: toSimResult(res)}
-	out.result.Notes = append(out.result.Notes, d.planWarnings(plan, in)...)
+	out.result.Notes = append(out.result.Notes, d.planWarnings(plan, in, res.End)...)
 
 	planSymbols := allocationSymbols(plan.Allocations)
 	switch {
@@ -480,7 +481,7 @@ func (d Deps) simulate(ctx context.Context, plan sim.Plan, baseline string) (sim
 			out.result.Notes = append(out.result.Notes, note)
 		}
 		out.result.Notes = append(out.result.Notes, d.staleWarnings(baseline)...)
-		out.result.Notes = append(out.result.Notes, nonEmpty(provisionalNote(in.Series[baseline], plan.End))...)
+		out.result.Notes = append(out.result.Notes, nonEmpty(provisionalNote(in.Series[baseline], res.End, d.clock()))...)
 	}
 	return out, nil
 }

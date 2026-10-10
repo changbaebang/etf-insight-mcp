@@ -157,6 +157,7 @@ func parseChart(body []byte, now time.Time) (*market.Series, error) {
 	if err != nil {
 		return nil, err
 	}
+	bars = dropAfterSession(r.Meta, bars, loc)
 	attachDividends(bars, r.Events.Dividends, loc)
 
 	s := &market.Series{
@@ -314,6 +315,25 @@ func parseMeta(m chartMeta, loc *time.Location, now time.Time) market.Meta {
 		meta.FirstTradeDate = localDay(m.FirstTradeDate, loc)
 	}
 	return meta
+}
+
+// dropAfterSession removes bars dated after the most recent regular
+// session (currentTradingPeriod.regular). Yahoo appends such a bar for a
+// market it keeps quoting outside its sessions, for example KRW=X on a
+// Saturday: the bar holds a live quote rather than a session's close, and
+// the next session's bar supersedes it. Without session data nothing is
+// dropped.
+func dropAfterSession(m chartMeta, bars []market.Bar, loc *time.Location) []market.Bar {
+	start := m.CurrentTradingPeriod.Regular.Start
+	if start == 0 {
+		return bars
+	}
+	sessionDay := localDay(start, loc)
+	n := len(bars)
+	for n > 0 && bars[n-1].Date.After(sessionDay) {
+		n--
+	}
+	return bars[:n]
 }
 
 // provisionalUntil returns the end of the regular session when the last

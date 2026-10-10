@@ -51,7 +51,7 @@ func (d Deps) registerRefreshPrices(s *mcp.Server) {
 			OpenWorldHint:   &openWorld,
 		},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in refreshPricesInput) (*mcp.CallToolResult, refreshPricesOutput, error) {
-		out, err := d.refreshPrices(ctx, in, progressCallback(ctx, "refreshed"))
+		out, err := d.refreshPrices(ctx, in, progressCallback(ctx, "done"))
 		return nil, out, err
 	})
 }

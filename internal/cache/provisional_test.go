@@ -56,13 +56,57 @@ func TestStoreRefetchesIntradayBarAfterTheSessionEnds(t *testing.T) {
 	}
 }
 
-func TestRefreshMetaTakesTheTailsProvisionalState(t *testing.T) {
-	have := market.Meta{Symbol: "SPY", ProvisionalUntil: t0}
-	if got := refreshMeta(have, market.Meta{}); !got.ProvisionalUntil.IsZero() {
-		t.Errorf("settled tail: ProvisionalUntil = %v, want zero", got.ProvisionalUntil)
+// TestMergeTailProvisionalState: the merged series is intraday exactly
+// when its last bar is: the tail's state when the tail supplies the last
+// bar, the cache's when an empty tail leaves the cached bar in place, and
+// none when the newest cached bar was dropped.
+func TestMergeTailProvisionalState(t *testing.T) {
+	cachedUntil, tailUntil := t0.Add(time.Hour), t0.Add(26*time.Hour)
+	intradayBase := func() *market.Series {
+		b := cachedHistory()
+		b.Meta.ProvisionalUntil = cachedUntil
+		return b
 	}
-	later := t0.Add(24 * time.Hour)
-	if got := refreshMeta(market.Meta{Symbol: "SPY"}, market.Meta{ProvisionalUntil: later}); !got.ProvisionalUntil.Equal(later) {
-		t.Errorf("intraday tail: ProvisionalUntil = %v, want %v", got.ProvisionalUntil, later)
+
+	// A tail that settles the newest cached day and adds an intraday one.
+	tail := cut(providerHistory(), date("2026-09-25"), date("2026-10-08"))
+	tail.Meta.ProvisionalUntil = tailUntil
+	merged, err := mergeTail(intradayBase(), tail, windowFrom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.Meta.ProvisionalUntil.Equal(tailUntil) {
+		t.Errorf("tail supplies the last bar: ProvisionalUntil = %v, want %v", merged.Meta.ProvisionalUntil, tailUntil)
+	}
+
+	// A settled tail that ends on the newest cached day.
+	settled := cut(cachedHistory(), date("2026-09-25"), date("2026-10-02"))
+	merged, err = mergeTail(intradayBase(), settled, windowFrom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.Meta.ProvisionalUntil.IsZero() {
+		t.Errorf("settled tail: ProvisionalUntil = %v, want zero", merged.Meta.ProvisionalUntil)
+	}
+
+	// An empty tail keeps the cached intraday bar, and its flag.
+	base := intradayBase()
+	merged, err = mergeTail(base, &market.Series{Meta: market.Meta{Symbol: "SPY"}}, windowFrom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.Meta.ProvisionalUntil.Equal(cachedUntil) {
+		t.Errorf("empty tail: ProvisionalUntil = %v, want the cached %v", merged.Meta.ProvisionalUntil, cachedUntil)
+	}
+
+	// A tail without the newest cached day and nothing newer drops that
+	// intraday bar; the settled bar before it is last.
+	short := cut(cachedHistory(), date("2026-09-25"), date("2026-10-01"))
+	merged, err = mergeTail(intradayBase(), short, windowFrom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, _ := merged.Last(); !last.Date.Equal(date("2026-10-01")) || !merged.Meta.ProvisionalUntil.IsZero() {
+		t.Errorf("dropped intraday bar: last %s, ProvisionalUntil %v; want 2026-10-01 and zero", last.Date.Format("2006-01-02"), merged.Meta.ProvisionalUntil)
 	}
 }

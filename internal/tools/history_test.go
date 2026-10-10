@@ -58,18 +58,18 @@ func TestProvisionalNote(t *testing.T) {
 	src := newFakeSource()
 	voo := src.series["VOO"]
 	last, _ := voo.Last()
-	if got := provisionalNote(voo, time.Time{}); got != "" {
+	if got := provisionalNote(voo, time.Time{}, now); got != "" {
 		t.Fatalf("settled series: note %q, want none", got)
 	}
 	voo.Meta.ProvisionalUntil = last.Date.Add(20 * time.Hour)
 	voo.Meta.FetchedAt = last.Date.Add(15 * time.Hour)
-	if got := provisionalNote(voo, time.Time{}); !strings.Contains(got, "VOO's latest bar") || !strings.Contains(got, "intraday price") {
+	if got := provisionalNote(voo, time.Time{}, now); !strings.Contains(got, "VOO's latest bar") || !strings.Contains(got, "intraday price") {
 		t.Errorf("intraday last bar: note %q", got)
 	}
-	if got := provisionalNote(voo, last.Date.AddDate(0, 0, -1)); got != "" {
+	if got := provisionalNote(voo, last.Date.AddDate(0, 0, -1), now); got != "" {
 		t.Errorf("figures that end before the last bar: note %q, want none", got)
 	}
-	if got := provisionalSummary(src.series, []string{"SPY", "VOO"}); !strings.Contains(got, "latest bars of VOO") || strings.Contains(got, "SPY") {
+	if got := provisionalSummary(src.series, []string{"SPY", "VOO"}, nil); !strings.Contains(got, "latest bars of VOO") || strings.Contains(got, "SPY") {
 		t.Errorf("summary = %q, want VOO only", got)
 	}
 	if got := nonEmpty("", "a", ""); len(got) != 1 || got[0] != "a" {
@@ -99,5 +99,46 @@ func TestToolsFlagIntradayLastBar(t *testing.T) {
 	callOK(t, sess, "get_price_history", map[string]any{"symbol": "VOO", "end": "2022-06-30"}, &hist)
 	if strings.Contains(strings.Join(hist.Warnings, "\n"), "intraday") {
 		t.Errorf("history ending before the last bar: warnings %q, want no intraday note", hist.Warnings)
+	}
+}
+
+func TestProvisionalNoteWording(t *testing.T) {
+	src := newFakeSource()
+	voo := src.series["VOO"]
+	last, _ := voo.Last()
+	voo.Meta.ProvisionalUntil = last.Date.Add(20 * time.Hour)
+	voo.Meta.FetchedAt = last.Date.Add(15 * time.Hour)
+	open := provisionalNote(voo, time.Time{}, last.Date.Add(16*time.Hour))
+	if !strings.Contains(open, "after the session ends at") || !strings.Contains(open, formatDate(last.Date)+" 20:00 UTC") {
+		t.Errorf("session open: %q", open)
+	}
+	ended := provisionalNote(voo, time.Time{}, last.Date.Add(21*time.Hour))
+	if !strings.Contains(ended, "session ended at") || !strings.Contains(ended, "refresh_prices") {
+		t.Errorf("session ended: %q", ended)
+	}
+	if got := provisionalSummary(src.series, []string{"VOO"}, func(string) time.Time { return last.Date.AddDate(0, 0, -7) }); got != "" {
+		t.Errorf("summary for an answer that ends a week earlier = %q, want none", got)
+	}
+}
+
+// TestIntradayNotesFollowWhatTheToolRead: a simulation that ends before
+// the intraday bar says nothing; find_alternatives flags its base symbol.
+func TestIntradayNotesFollowWhatTheToolRead(t *testing.T) {
+	src := newFakeSource()
+	voo := src.series["VOO"]
+	last, _ := voo.Last()
+	voo.Meta.ProvisionalUntil = last.Date.Add(20 * time.Hour)
+	voo.Meta.FetchedAt = last.Date.Add(15 * time.Hour)
+	sess := newSession(t, testDeps(src))
+
+	var sim simulateDCAOutput
+	callOK(t, sess, "simulate_dca", map[string]any{"symbol": "VOO", "amount": 100, "cadence": "monthly", "start": "2022-01-03", "end": "2022-12-30", "compare_with": ""}, &sim)
+	if strings.Contains(strings.Join(sim.Notes, "\n"), "intraday") {
+		t.Errorf("simulation ending 2022-12-30 notes = %q, want no intraday note", sim.Notes)
+	}
+	var alts findAlternativesOutput
+	callOK(t, sess, "find_alternatives", map[string]any{"symbol": "VOO"}, &alts)
+	if !strings.Contains(strings.Join(alts.Warnings, "\n"), "latest bars of VOO") {
+		t.Errorf("find_alternatives warnings = %q, want the base flagged", alts.Warnings)
 	}
 }

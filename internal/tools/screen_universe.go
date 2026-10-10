@@ -191,7 +191,7 @@ func (d Deps) screenUniverse(ctx context.Context, in screenUniverseInput) (scree
 		out.Warnings = append(out.Warnings, fmt.Sprintf("last bar more than a week before %s, so their figures are older: %s", out.AsOf, strings.Join(lagging, ", ")))
 	}
 	out.Warnings = append(out.Warnings, d.analysisCacheWarnings(fetched)...)
-	out.Warnings = append(out.Warnings, nonEmpty(provisionalSummary(series, fetched))...)
+	out.Warnings = append(out.Warnings, nonEmpty(provisionalSummary(series, fetched, func(sym string) time.Time { return anchors[sym] }))...)
 	return out, nil
 }
 

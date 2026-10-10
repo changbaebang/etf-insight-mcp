@@ -144,7 +144,7 @@ func (d Deps) getETFInfo(ctx context.Context, in getETFInfoInput) (getETFInfoOut
 		out.Known, out.Universe = true, &row
 	}
 	out.Warnings = append(out.Warnings, d.staleWarnings(s.Meta.Symbol)...)
-	out.Warnings = append(out.Warnings, nonEmpty(provisionalNote(s, asOf))...)
+	out.Warnings = append(out.Warnings, nonEmpty(provisionalNote(s, asOf, d.clock()))...)
 	out.Warnings = append(out.Warnings, nonEmpty(d.inceptionWarning(ctx, s))...)
 	if note := instrumentNote(s); note != "" {
 		out.Warnings = append(out.Warnings, note)

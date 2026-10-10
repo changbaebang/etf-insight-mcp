@@ -176,7 +176,7 @@ func (d Deps) getDividends(ctx context.Context, in getDividendsInput) (getDivide
 	if out.Count == 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("no dividend was paid between %s and %s", out.From, out.To))
 	}
-	out.Warnings = append(d.staleWarnings(s.Meta.Symbol), nonEmpty(provisionalNote(s, end))...)
+	out.Warnings = append(d.staleWarnings(s.Meta.Symbol), nonEmpty(provisionalNote(s, end, d.clock()))...)
 	return out, nil
 }
 
