@@ -135,7 +135,7 @@ type reviewCostDragOutput struct {
 type reviewLongTermOutput struct {
 	Years        float64                 `json:"years"`
 	Rolling      *reviewRollingOutput    `json:"rolling" jsonschema:"the plan over every historical window of years, one starting every 12 months (every month when that gives fewer than 10 windows), so neighbouring windows overlap; null when the history is too short (see notes)"`
-	MonteCarlo   *reviewMonteCarloOutput `json:"monte_carlo" jsonschema:"block-bootstrap projection of the same plan over years, 2000 paths, seed 42 (as forecast_dca computes it); null when it cannot run (see notes)"`
+	MonteCarlo   *reviewMonteCarloOutput `json:"monte_carlo" jsonschema:"block-bootstrap projection of the same plan over years, 2000 paths, seed 42 (as project_dca_outcomes computes it); null when it cannot run (see notes)"`
 	CostDrag     reviewCostDragOutput    `json:"cost_drag" jsonschema:"what a 0.20% instead of a 0.03% expense ratio costs over years on this outlay"`
 	CostDragNote string                  `json:"cost_drag_note"`
 	Notes        []string                `json:"notes,omitempty"`
@@ -156,7 +156,7 @@ func (d Deps) registerReviewDCAPlan(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "review_dca_plan",
 		Title:       "Review DCA plan",
-		Description: "Reviews a recurring purchase plan of ONE ETF in USD, typically a small one such as 5 USD every trading day with a 0.99 USD commission, and lays out the facts in one call. plan: contributions per year (252 daily, 52 weekly, 12 monthly) and annual outlay. costs: commission per purchase, as a percentage of each purchase and per year, the fund's expense ratio (from the fund data source; null when unavailable) with its approximate yearly cost, and the total first-year cost as a percentage of the outlay, with the formulas. history: trailing returns, trailing-12-month (52-week) dividend yield and the yearly dividends the horizon's net contributions would earn at it, 1-year volatility, deepest drawdown. short_term: the current trend reading and how often a plan of short_horizon_months ended below cost across every historical start month, also before commissions so their share is visible. long_term: the same over horizon_years from real history, a 2000-path block-bootstrap projection (seed 42) of final value and return (warned when the history is shorter than the horizon or than 5 years), and the arithmetic cost of a 0.20% versus a 0.03% expense ratio. observations: plain factual sentences. It never recommends; to look at cheaper or similar funds call find_alternatives. USD only, a fund quoted in USD, no portfolios: for KRW or several ETFs use simulate_rolling_dca and forecast_dca. Defaults: cadence daily, horizon_years 5, short_horizon_months 3, commission_fixed 0, fee_rate 0, reinvest_dividends true. Percentages are plain numbers (7.5 = 7.5%).",
+		Description: "Reviews a recurring purchase plan of ONE ETF in USD, typically a small one such as 5 USD every trading day with a 0.99 USD commission, and lays out the facts in one call. plan: contributions per year (252 daily, 52 weekly, 12 monthly) and annual outlay. costs: commission per purchase, as a percentage of each purchase and per year, the fund's expense ratio (from the fund data source; null when unavailable) with its approximate yearly cost, and the total first-year cost as a percentage of the outlay, with the formulas. history: trailing returns, trailing-12-month (52-week) dividend yield and the yearly dividends the horizon's net contributions would earn at it, 1-year volatility, deepest drawdown. short_term: the current trend reading and how often a plan of short_horizon_months ended below cost across every historical start month, also before commissions so their share is visible. long_term: the same over horizon_years from real history, a 2000-path block-bootstrap projection (seed 42) of final value and return (warned when the history is shorter than the horizon or than 5 years), and the arithmetic cost of a 0.20% versus a 0.03% expense ratio. observations: plain factual sentences. It never recommends; to look at cheaper or similar funds call find_alternatives. USD only, a fund quoted in USD, no portfolios: for KRW or several ETFs use simulate_rolling_dca and project_dca_outcomes. Defaults: cadence daily, horizon_years 5, short_horizon_months 3, commission_fixed 0, fee_rate 0, reinvest_dividends true. Percentages are plain numbers (7.5 = 7.5%).",
 		Annotations: readOnly("Review DCA plan", true),
 		InputSchema: inputSchema[reviewDCAPlanInput](schemaTweaks{
 			defaults: costDefaults(map[string]any{"cadence": "daily", "horizon_years": defaultReviewHorizonYears, "short_horizon_months": defaultReviewShortMonths}),
@@ -227,11 +227,16 @@ func (d Deps) reviewDCAPlan(ctx context.Context, in reviewDCAPlanInput) (reviewD
 		History:    reviewHistory(f, summary),
 		Disclaimer: Disclaimer,
 	}
-	out.ShortTerm = reviewShortTerm(f, plan, simIn, trend)
+	out.ShortTerm = reviewShortTerm(ctx, f, plan, simIn, trend)
 	var historyWarning string
 	out.LongTerm, historyWarning = reviewLongTerm(ctx, f, plan, simIn, in)
 	out.Observations = reviewObservations(f, out, summary, fullYear)
 	out.Warnings = d.planWarnings(plan, simIn)
+	if profile != nil {
+		first, _ := series.First()
+		last, _ := series.Last()
+		out.Warnings = append(out.Warnings, nonEmpty(inceptionNote(profile.InceptionDate, first.Date, last.Date))...)
+	}
 	if !fullYear {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("%s has less than 52 weeks of history (since %s), so ttm_dividend_yield_pct, projected_annual_dividends_at_horizon and volatility_1y_pct cover only that period, not a full year", f.sym, out.History.FirstDate))
 	}
@@ -401,9 +406,9 @@ func reviewHistory(f reviewFigures, s analytics.Summary) reviewHistoryOutput {
 }
 
 // reviewShortTerm reads the trend and runs the short rolling windows.
-func reviewShortTerm(f reviewFigures, plan sim.Plan, in sim.Input, trend analytics.Trend) reviewShortTermOutput {
+func reviewShortTerm(ctx context.Context, f reviewFigures, plan sim.Plan, in sim.Input, trend analytics.Trend) reviewShortTermOutput {
 	out := reviewShortTermOutput{Months: f.shortMonths, Trend: toTrendOutput(trend)}
-	rolling, _, err := runReviewRolling(plan, in, f.shortMonths, 1)
+	rolling, _, err := runReviewRolling(ctx, plan, in, f.shortMonths, 1)
 	if err != nil {
 		out.Notes = append(out.Notes, reviewRollingNote(err, "short_horizon_months"))
 		return out
@@ -418,7 +423,7 @@ func reviewShortTerm(f reviewFigures, plan sim.Plan, in sim.Input, trend analyti
 func reviewLongTerm(ctx context.Context, f reviewFigures, plan sim.Plan, simIn sim.Input, in reviewDCAPlanInput) (reviewLongTermOutput, string) {
 	out := reviewLongTermOutput{Years: f.horizonYears}
 
-	rolling, res, err := runReviewRolling(plan, simIn, f.horizonMonths, reviewLongStep)
+	rolling, res, err := runReviewRolling(ctx, plan, simIn, f.horizonMonths, reviewLongStep)
 	if err != nil || res.Count < reviewMinLongWindows {
 		var why string
 		switch {
@@ -429,7 +434,7 @@ func reviewLongTerm(ctx context.Context, f reviewFigures, plan sim.Plan, simIn s
 		default:
 			why = "fails (" + strings.ReplaceAll(err.Error(), "sim: ", "") + ")"
 		}
-		monthly, _, merr := runReviewRolling(plan, simIn, f.horizonMonths, 1)
+		monthly, _, merr := runReviewRolling(ctx, plan, simIn, f.horizonMonths, 1)
 		switch {
 		case merr == nil:
 			rolling, err = monthly, nil
@@ -481,8 +486,8 @@ func reviewRollingNote(err error, field string) string {
 // When the plan pays commissions the windows are run a second time
 // without them, so the summary can say how much of the result is the
 // commissions and how much the fund.
-func runReviewRolling(plan sim.Plan, in sim.Input, months, step int) (*reviewRollingOutput, *sim.RollingResult, error) {
-	res, err := sim.RunRolling(plan, in, sim.RollingConfig{DurationYears: float64(months) / 12, StepMonths: step})
+func runReviewRolling(ctx context.Context, plan sim.Plan, in sim.Input, months, step int) (*reviewRollingOutput, *sim.RollingResult, error) {
+	res, err := sim.RunRollingContext(ctx, plan, in, sim.RollingConfig{DurationYears: float64(months) / 12, StepMonths: step})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -493,7 +498,7 @@ func runReviewRolling(plan sim.Plan, in sim.Input, months, step int) (*reviewRol
 	out := &reviewRollingOutput{rollingStatsOutput: stats}
 	out.Summary = fmt.Sprintf("over %d historical %d-month windows%s the plan ended below cost %s%% of the time",
 		stats.WindowsCount, months, windowSpacing(stats.WindowsCount, months, step), obsNum(stats.ProbLossPct))
-	if gross := grossRolling(plan, in, months, step); gross != nil {
+	if gross := grossRolling(ctx, plan, in, months, step); gross != nil {
 		out.BeforeCommissions = gross
 		// The fixed commission is charged once per ETF purchased.
 		share := (plan.FeeRate*plan.Amount + plan.FeeFixed*float64(len(plan.Allocations))) / plan.Amount
@@ -528,12 +533,12 @@ func windowSpacing(count, months, step int) string {
 // commission_fixed set to 0. It returns nil when the plan pays no
 // commission, or when the run fails, in which case the summary simply
 // leaves the comparison out.
-func grossRolling(plan sim.Plan, in sim.Input, months, step int) *reviewGrossOutput {
+func grossRolling(ctx context.Context, plan sim.Plan, in sim.Input, months, step int) *reviewGrossOutput {
 	if plan.FeeRate == 0 && plan.FeeFixed == 0 {
 		return nil
 	}
 	plan.FeeRate, plan.FeeFixed = 0, 0
-	res, err := sim.RunRolling(plan, in, sim.RollingConfig{DurationYears: float64(months) / 12, StepMonths: step})
+	res, err := sim.RunRollingContext(ctx, plan, in, sim.RollingConfig{DurationYears: float64(months) / 12, StepMonths: step})
 	if err != nil {
 		return nil
 	}

@@ -17,7 +17,7 @@ import (
 
 // toolNames is every tool Register must expose.
 var toolNames = []string{
-	"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "forecast_dca",
+	"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "project_dca_outcomes",
 	// data
 	"search_symbols", "get_quote", "get_dividends", "get_splits", "get_fund_profile", "get_holdings", "get_fund_performance", "get_news", "market_overview",
 	// analysis
@@ -211,7 +211,7 @@ func TestDCAReportPrompt(t *testing.T) {
 	}
 	text := res.Messages[0].Content.(*mcp.TextContent).Text
 	wantStart := now.AddDate(-3, 0, 0).Format(market.DateLayout)
-	for _, want := range []string{"get_etf_info", "simulate_dca", "forecast_dca", `"VOO"`, "amount 100", `"USD"`, wantStart, "horizon_years 5", Disclaimer} {
+	for _, want := range []string{"get_etf_info", "simulate_dca", "project_dca_outcomes", `"VOO"`, "amount 100", `"USD"`, wantStart, "horizon_years 5", Disclaimer} {
 		if !strings.Contains(text, want) {
 			t.Errorf("prompt text lacks %q", want)
 		}

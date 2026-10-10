@@ -50,6 +50,11 @@ type Meta struct {
 	FiftyTwoWeekHigh   float64
 	FiftyTwoWeekLow    float64
 	FetchedAt          time.Time
+	// ProvisionalUntil is set when the last bar belongs to a trading
+	// session that was still open when the series was fetched: that bar's
+	// Close is an intraday price, and the session ends (the close becomes
+	// final) at this time. Zero when the last bar is a settled close.
+	ProvisionalUntil time.Time
 }
 
 // Series is the full daily history of one symbol.

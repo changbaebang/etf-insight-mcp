@@ -13,7 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type forecastDCAInput struct {
+type projectDCAInput struct {
 	Symbol                  string            `json:"symbol,omitempty" jsonschema:"single ticker to project, e.g. VOO; give either symbol or allocations, not both"`
 	Allocations             []allocationInput `json:"allocations,omitempty" jsonschema:"portfolio to project as a list of {symbol, weight} with weights summing to 1 or 100; alternative to symbol"`
 	Amount                  float64           `json:"amount" jsonschema:"size of one contribution in currency before fees, e.g. 100 (USD) or 10000 (KRW); must be > 0"`
@@ -35,7 +35,7 @@ type symbolTrendOutput struct {
 	trendOutput
 }
 
-type forecastDCAOutput struct {
+type projectDCAOutput struct {
 	Allocations               []allocationOutput  `json:"allocations"`
 	Amount                    float64             `json:"amount"`
 	Currency                  string              `json:"currency"`
@@ -60,15 +60,15 @@ type forecastDCAOutput struct {
 	Disclaimer                string              `json:"disclaimer"`
 }
 
-func registerForecastDCA(s *mcp.Server, d Deps) {
+func registerProjectDCA(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "forecast_dca",
+		Name:        "project_dca_outcomes",
 		Description: "Projects the range of outcomes of a recurring-purchase plan over horizon_years by resampling the symbols' own daily history with a block bootstrap: blocks of consecutive past days are drawn at random (the same days for every symbol and for the KRW=X rate, so correlations survive) and the plan is run on thousands of such paths. This is NOT a price prediction: it only shows what the plan would have produced under reshuffled history, nothing that did not happen in the lookback can happen in a path, and the historical average return is assumed to persist unless expected_annual_return_pct overrides it. It needs at least a year of common history, and warns when the history is shorter than the horizon or than 5 years. Symbols must be quoted in USD. Costs: fee_rate and commission_fixed (per ETF purchased), folded into one fee rate. Returns percentiles (p5 to p95) of the final value and of the return, the probability of ending below the amount invested, the mean, the historical return and volatility the bootstrap is built on, the lookback range, the modelling assumptions in words and each symbol's current trend. Deterministic for a given seed.",
-		Title:       "Forecast DCA",
-		Annotations: readOnly("Forecast DCA", true),
-		InputSchema: forecastDCASchema(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in forecastDCAInput) (*mcp.CallToolResult, forecastDCAOutput, error) {
-		out, err := d.forecastDCA(ctx, in)
+		Title:       "Project DCA outcomes",
+		Annotations: readOnly("Project DCA outcomes", true),
+		InputSchema: projectDCASchema(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in projectDCAInput) (*mcp.CallToolResult, projectDCAOutput, error) {
+		out, err := d.projectDCA(ctx, in)
 		return nil, out, err
 	})
 }
@@ -78,10 +78,10 @@ func registerForecastDCA(s *mcp.Server, d Deps) {
 // could not be reproduced from the seed echoed back.
 const maxSeed = 1<<53 - 1
 
-// forecastDCASchema is the input schema of forecast_dca: the inferred one
+// projectDCASchema is the input schema of project_dca_outcomes: the inferred one
 // with its defaults and the bound on seed.
-func forecastDCASchema() *jsonschema.Schema {
-	s := inputSchema[forecastDCAInput](schemaTweaks{
+func projectDCASchema() *jsonschema.Schema {
+	s := inputSchema[projectDCAInput](schemaTweaks{
 		defaults: map[string]any{"currency": "USD", "cadence": "daily", "simulations": analytics.DefaultSimulations, "seed": analytics.DefaultSeed, "block_length": analytics.DefaultBlockLength, "lookback_years": 0, "fee_rate": 0, "commission_fixed": 0},
 		minItems: map[string]int{"allocations": 1},
 	})
@@ -89,32 +89,32 @@ func forecastDCASchema() *jsonschema.Schema {
 	return s
 }
 
-// forecastDCA validates the plan, fetches the histories and runs the
+// projectDCA validates the plan, fetches the histories and runs the
 // Monte Carlo.
-func (d Deps) forecastDCA(ctx context.Context, in forecastDCAInput) (forecastDCAOutput, error) {
+func (d Deps) projectDCA(ctx context.Context, in projectDCAInput) (projectDCAOutput, error) {
 	allocs, err := resolveAllocations(in.Symbol, in.Allocations)
 	if err != nil {
-		return forecastDCAOutput{}, err
+		return projectDCAOutput{}, err
 	}
 	currency, err := parseCurrency(in.Currency)
 	if err != nil {
-		return forecastDCAOutput{}, err
+		return projectDCAOutput{}, err
 	}
 	cadence, err := parseCadence(in.Cadence)
 	if err != nil {
-		return forecastDCAOutput{}, err
+		return projectDCAOutput{}, err
 	}
 	if err := checkAmount(in.Amount); err != nil {
-		return forecastDCAOutput{}, err
+		return projectDCAOutput{}, err
 	}
 	if in.HorizonYears <= 0 || in.HorizonYears > analytics.MaxHorizonYears {
-		return forecastDCAOutput{}, fmt.Errorf("horizon_years must be > 0 and at most %d, got %v", analytics.MaxHorizonYears, in.HorizonYears)
+		return projectDCAOutput{}, fmt.Errorf("horizon_years must be > 0 and at most %d, got %v", analytics.MaxHorizonYears, in.HorizonYears)
 	}
 	if err := checkFeeRate(in.FeeRate); err != nil {
-		return forecastDCAOutput{}, err
+		return projectDCAOutput{}, err
 	}
 	if err := checkFixedCommission(in.CommissionFixed, in.Amount, in.FeeRate, allocs); err != nil {
-		return forecastDCAOutput{}, err
+		return projectDCAOutput{}, err
 	}
 	cfg := analytics.MCConfig{
 		Simulations:   in.Simulations,
@@ -126,7 +126,7 @@ func (d Deps) forecastDCA(ctx context.Context, in forecastDCAInput) (forecastDCA
 	if in.ExpectedAnnualReturnPct != nil {
 		r := *in.ExpectedAnnualReturnPct
 		if math.IsNaN(r) || r <= -100 || r > maxExpectedReturnPct {
-			return forecastDCAOutput{}, fmt.Errorf("expected_annual_return_pct must be above -100 and at most %v, got %v", maxExpectedReturnPct, r)
+			return projectDCAOutput{}, fmt.Errorf("expected_annual_return_pct must be above -100 and at most %v, got %v", maxExpectedReturnPct, r)
 		}
 		if r != 0 && math.Abs(r) < 1 {
 			warnings = append(warnings, fmt.Sprintf("expected_annual_return_pct %v means %v%% a year; pass 7 for 7%%", r, r))
@@ -151,17 +151,17 @@ func (d Deps) forecastDCA(ctx context.Context, in forecastDCAInput) (forecastDCA
 	series, errs := d.fetchAll(ctx, fetch)
 	for _, sym := range symbols {
 		if err := errs[sym]; err != nil {
-			return forecastDCAOutput{}, err
+			return projectDCAOutput{}, err
 		}
 		if err := requireUSD(series[sym]); err != nil {
-			return forecastDCAOutput{}, err
+			return projectDCAOutput{}, err
 		}
 		if note := instrumentNote(series[sym]); note != "" {
 			warnings = append(warnings, note)
 		}
 	}
 	if err := errs[fxSymbol]; krw && err != nil {
-		return forecastDCAOutput{}, fmt.Errorf("exchange rate: %w", err)
+		return projectDCAOutput{}, fmt.Errorf("exchange rate: %w", err)
 	}
 
 	feeRate, feeNote := foldCommission(in.FeeRate, in.CommissionFixed, in.Amount, len(allocs))
@@ -176,22 +176,22 @@ func (d Deps) forecastDCA(ctx context.Context, in forecastDCAInput) (forecastDCA
 	}
 	res, err := analytics.MonteCarloContext(ctx, plan, cfg, analytics.MCInput{Series: series, FX: series[fxSymbol]})
 	if err != nil {
-		return forecastDCAOutput{}, userError(err)
+		return projectDCAOutput{}, userError(err)
 	}
 	if err := checkFinite("forecast", append([]float64{res.Invested, res.MeanFinal}, mapValues(res.Percentiles)...)...); err != nil {
-		return forecastDCAOutput{}, err
+		return projectDCAOutput{}, err
 	}
 
 	trends := make([]symbolTrendOutput, 0, len(symbols))
 	for _, sym := range symbols {
 		t, err := analytics.AnalyzeTrend(series[sym], time.Time{})
 		if err != nil {
-			return forecastDCAOutput{}, userError(err)
+			return projectDCAOutput{}, userError(err)
 		}
 		trends = append(trends, symbolTrendOutput{Symbol: sym, trendOutput: toTrendOutput(t)})
 	}
 
-	out := forecastDCAOutput{
+	out := projectDCAOutput{
 		Allocations:               toAllocationOutputs(allocs),
 		Amount:                    in.Amount,
 		Currency:                  currency,
@@ -223,6 +223,7 @@ func (d Deps) forecastDCA(ctx context.Context, in forecastDCAInput) (forecastDCA
 	}
 	for _, sym := range fetch {
 		out.Warnings = append(out.Warnings, d.staleWarnings(sym)...)
+		out.Warnings = append(out.Warnings, nonEmpty(provisionalNote(series[sym], time.Time{}))...)
 	}
 	return out, nil
 }
@@ -250,7 +251,7 @@ func foldCommission(feeRate, fixed, amount float64, n int) (float64, string) {
 
 // minResampledYears is how much history a projection should resample
 // before its range is taken at face value: shorter histories hold one
-// market period rather than a cycle, so forecast_dca and review_dca_plan
+// market period rather than a cycle, so project_dca_outcomes and review_dca_plan
 // warn below it.
 const minResampledYears = 5
 

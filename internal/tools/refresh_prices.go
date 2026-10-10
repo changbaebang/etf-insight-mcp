@@ -50,8 +50,8 @@ func (d Deps) registerRefreshPrices(s *mcp.Server) {
 			IdempotentHint:  true,
 			OpenWorldHint:   &openWorld,
 		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in refreshPricesInput) (*mcp.CallToolResult, refreshPricesOutput, error) {
-		out, err := d.refreshPrices(ctx, in, refreshProgress(ctx, req))
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in refreshPricesInput) (*mcp.CallToolResult, refreshPricesOutput, error) {
+		out, err := d.refreshPrices(ctx, in, progressCallback(ctx, "refreshed"))
 		return nil, out, err
 	})
 }
@@ -181,24 +181,4 @@ func (d Deps) refreshOne(ctx context.Context, sym string) refreshResult {
 		r.OK = true
 	}
 	return r
-}
-
-// refreshProgress sends MCP progress notifications when the client asked
-// for them with a progress token, and does nothing otherwise.
-func refreshProgress(ctx context.Context, req *mcp.CallToolRequest) func(done, total int, sym string) {
-	if req == nil || req.Session == nil || req.Params == nil {
-		return func(int, int, string) {}
-	}
-	token := req.Params.GetProgressToken()
-	if token == nil {
-		return func(int, int, string) {}
-	}
-	return func(done, total int, sym string) {
-		_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
-			ProgressToken: token,
-			Progress:      float64(done),
-			Total:         float64(total),
-			Message:       fmt.Sprintf("%s done (%d of %d)", sym, done, total),
-		})
-	}
 }

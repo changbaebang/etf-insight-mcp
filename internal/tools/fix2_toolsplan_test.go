@@ -99,7 +99,7 @@ func TestFix2ToolsplanRejectsFundsNotQuotedInUSD(t *testing.T) {
 		{"simulate_portfolio_dca", map[string]any{"allocations": []map[string]any{{"symbol": "VOO", "weight": 50}, {"symbol": "KRFUND", "weight": 50}}, "amount": 100, "start": "2022-01-03"}},
 		{"simulate_lump_sum_vs_dca", map[string]any{"symbol": "KRFUND", "total_amount": 1000, "start": "2022-01-03"}},
 		{"simulate_rolling_dca", map[string]any{"symbol": "KRFUND", "amount": 100, "duration_years": 1}},
-		{"forecast_dca", map[string]any{"symbol": "KRFUND", "amount": 100, "horizon_years": 1, "simulations": 50}},
+		{"project_dca_outcomes", map[string]any{"symbol": "KRFUND", "amount": 100, "horizon_years": 1, "simulations": 50}},
 		{"review_dca_plan", map[string]any{"symbol": "KRFUND", "amount": 5, "horizon_years": 1}},
 	}
 	for _, c := range calls {
@@ -122,10 +122,10 @@ func TestFix2ToolsplanRejectsFundsNotQuotedInUSD(t *testing.T) {
 		if !hasNote(simOut.Notes, "^IDX is an index, not an investable fund") {
 			t.Errorf("simulate_dca notes = %v", simOut.Notes)
 		}
-		var fc forecastDCAOutput
-		callOK(t, sess, "forecast_dca", map[string]any{"symbol": "^IDX", "amount": 100, "horizon_years": 1, "simulations": 50}, &fc)
+		var fc projectDCAOutput
+		callOK(t, sess, "project_dca_outcomes", map[string]any{"symbol": "^IDX", "amount": 100, "horizon_years": 1, "simulations": 50}, &fc)
 		if !hasNote(fc.Warnings, "^IDX is an index, not an investable fund") {
-			t.Errorf("forecast_dca warnings = %v", fc.Warnings)
+			t.Errorf("project_dca_outcomes warnings = %v", fc.Warnings)
 		}
 	})
 }
@@ -134,8 +134,8 @@ func TestFix2ToolsplanForecastChargesCommissionFixed(t *testing.T) {
 	src := newFakeSource()
 	sess := newSession(t, testDeps(src))
 
-	var out forecastDCAOutput
-	callOK(t, sess, "forecast_dca", map[string]any{"symbol": "VOO", "amount": 5, "horizon_years": 2, "simulations": 200, "commission_fixed": 0.99}, &out)
+	var out projectDCAOutput
+	callOK(t, sess, "project_dca_outcomes", map[string]any{"symbol": "VOO", "amount": 5, "horizon_years": 2, "simulations": 200, "commission_fixed": 0.99}, &out)
 	ref, err := analytics.MonteCarlo(analytics.MCPlan{
 		Symbols: []string{"VOO"}, Weights: []float64{1}, Amount: 5, Currency: "USD", Cadence: analytics.CadenceDaily, HorizonYears: 2, FeeRate: 0.99 / 5,
 	}, analytics.MCConfig{Simulations: 200}, analytics.MCInput{Series: src.series})
@@ -152,8 +152,8 @@ func TestFix2ToolsplanForecastChargesCommissionFixed(t *testing.T) {
 	}
 
 	t.Run("a portfolio pays it once per ETF", func(t *testing.T) {
-		var pf forecastDCAOutput
-		callOK(t, sess, "forecast_dca", map[string]any{
+		var pf projectDCAOutput
+		callOK(t, sess, "project_dca_outcomes", map[string]any{
 			"allocations": []map[string]any{{"symbol": "VOO", "weight": 50}, {"symbol": "SPY", "weight": 50}},
 			"amount":      10, "horizon_years": 1, "simulations": 100, "commission_fixed": 0.5, "fee_rate": 0.01,
 		}, &pf)
@@ -168,11 +168,11 @@ func TestFix2ToolsplanForecastChargesCommissionFixed(t *testing.T) {
 		}
 	})
 
-	callErr(t, sess, "forecast_dca", map[string]any{
+	callErr(t, sess, "project_dca_outcomes", map[string]any{
 		"allocations": []map[string]any{{"symbol": "VOO", "weight": 90}, {"symbol": "SPY", "weight": 10}},
 		"amount":      10, "horizon_years": 1, "commission_fixed": 1,
 	}, "SPY")
-	callErr(t, sess, "forecast_dca", map[string]any{"symbol": "VOO", "amount": 1, "horizon_years": 1, "commission_fixed": 1}, "commission_fixed 1 leaves nothing")
+	callErr(t, sess, "project_dca_outcomes", map[string]any{"symbol": "VOO", "amount": 1, "horizon_years": 1, "commission_fixed": 1}, "commission_fixed 1 leaves nothing")
 }
 
 func TestFix2ToolsplanShortResampledHistoryIsWarned(t *testing.T) {
@@ -182,19 +182,19 @@ func TestFix2ToolsplanShortResampledHistoryIsWarned(t *testing.T) {
 	sess := newSession(t, deps)
 
 	// VOO has three years of history: shorter than a five-year horizon.
-	var short forecastDCAOutput
-	callOK(t, sess, "forecast_dca", map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 5, "simulations": 50}, &short)
+	var short projectDCAOutput
+	callOK(t, sess, "project_dca_outcomes", map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 5, "simulations": 50}, &short)
 	if !hasNote(short.Warnings, "resamples only") {
 		t.Errorf("warnings = %v, want the short history flagged", short.Warnings)
 	}
 	// LONGRUN has twelve years, but lookback_years cuts it to two.
-	var cut forecastDCAOutput
-	callOK(t, sess, "forecast_dca", map[string]any{"symbol": "LONGRUN", "amount": 100, "horizon_years": 1, "lookback_years": 2, "simulations": 50}, &cut)
+	var cut projectDCAOutput
+	callOK(t, sess, "project_dca_outcomes", map[string]any{"symbol": "LONGRUN", "amount": 100, "horizon_years": 1, "lookback_years": 2, "simulations": 50}, &cut)
 	if !hasNote(cut.Warnings, "resamples only") {
 		t.Errorf("warnings = %v, want a two-year lookback flagged", cut.Warnings)
 	}
-	var long forecastDCAOutput
-	callOK(t, sess, "forecast_dca", map[string]any{"symbol": "LONGRUN", "amount": 100, "horizon_years": 5, "simulations": 50}, &long)
+	var long projectDCAOutput
+	callOK(t, sess, "project_dca_outcomes", map[string]any{"symbol": "LONGRUN", "amount": 100, "horizon_years": 5, "simulations": 50}, &long)
 	if hasNote(long.Warnings, "resamples only") {
 		t.Errorf("warnings = %v, want none for twelve years of history and a five-year horizon", long.Warnings)
 	}
@@ -485,7 +485,7 @@ func TestFix2ToolsplanLowFindings(t *testing.T) {
 	})
 
 	t.Run("seed above 2^53 is rejected by the schema", func(t *testing.T) {
-		callErr(t, sess, "forecast_dca", map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "seed": 9007199254740993.0}, "seed")
+		callErr(t, sess, "project_dca_outcomes", map[string]any{"symbol": "VOO", "amount": 100, "horizon_years": 1, "seed": 9007199254740993.0}, "seed")
 	})
 }
 

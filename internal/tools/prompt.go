@@ -30,7 +30,7 @@ func registerDCAReportPrompt(s *mcp.Server, d Deps) {
 	s.AddPrompt(&mcp.Prompt{
 		Name:        "dca_report",
 		Title:       "DCA report",
-		Description: "Runs get_etf_info, get_fund_profile, get_holdings, simulate_dca and forecast_dca for one ETF and writes a short report that ends with the disclaimer. Defaults: cadence daily, start three years before today, no commissions.",
+		Description: "Runs get_etf_info, get_fund_profile, get_holdings, simulate_dca and project_dca_outcomes for one ETF and writes a short report that ends with the disclaimer. Defaults: cadence daily, start three years before today, no commissions.",
 		Arguments: []*mcp.PromptArgument{
 			{Name: "symbol", Description: "ticker symbol, e.g. VOO", Required: true},
 			{Name: "amount", Description: "size of one contribution in the currency, e.g. 100", Required: true},
@@ -137,7 +137,7 @@ func (d Deps) dcaReport(args map[string]string) (*mcp.GetPromptResult, error) {
 1. Call get_etf_info with symbol "%[1]s". Note its trailing returns, volatility, drawdowns, dividend yield and the trend state with its reasons.
 2. Call get_fund_profile and get_holdings with symbol "%[1]s". Note the expense ratio and what the fund holds (top holdings, sectors, asset classes). If either fails or reports nothing, say the data is unavailable instead of guessing.
 3. Call simulate_dca with symbol "%[1]s", amount %[2]s, currency "%[3]s", cadence "%[4]s", start "%[5]s", %[6]s, keeping the default SPY baseline. Report invested, fees, final value, return, annualized return, max drawdown and the difference to SPY. Mention any notes (for example a moved start date).
-4. Call forecast_dca with symbol "%[1]s", amount %[2]s, currency "%[3]s", cadence "%[4]s", horizon_years %[7]d, %[6]s. Report the p10, p50 and p90 final values, the probability of loss and the historical return and volatility it is based on, and repeat any warnings. Say plainly that these are bootstrapped historical outcomes, not price predictions.
+4. Call project_dca_outcomes with symbol "%[1]s", amount %[2]s, currency "%[3]s", cadence "%[4]s", horizon_years %[7]d, %[6]s. Report the p10, p50 and p90 final values, the probability of loss and the historical return and volatility it is based on, and repeat any warnings. Say plainly that these are bootstrapped historical outcomes, not price predictions.
 
 Then write the report in four short sections: What it is, What the plan would have done, What the range of outcomes looks like, Caveats. Quote the dates used and the date of the latest bar. End with this disclaimer verbatim:
 

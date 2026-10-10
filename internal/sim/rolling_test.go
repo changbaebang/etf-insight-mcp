@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"context"
 	"errors"
 	"math"
 	"reflect"
@@ -469,4 +470,18 @@ func containsNote(notes []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestRunRollingContextStopsWhenCancelled(t *testing.T) {
+	spy := newSeries(t, "SPY", "2010-01-04", 3000, func(k int) float64 { return 100 + float64(k)/10 })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := RunRollingContext(ctx, singlePlan("SPY", Monthly, 100), seriesInput(spy), RollingConfig{DurationYears: 1, StepMonths: 1})
+	if !errors.Is(err, context.Canceled) || res != nil {
+		t.Fatalf("RunRollingContext on a cancelled context = %v, %v; want nil, context.Canceled", res, err)
+	}
+	// The same plan without cancellation still runs.
+	if _, err := RunRolling(singlePlan("SPY", Monthly, 100), seriesInput(spy), RollingConfig{DurationYears: 1, StepMonths: 1}); err != nil {
+		t.Fatalf("RunRolling: %v", err)
+	}
 }

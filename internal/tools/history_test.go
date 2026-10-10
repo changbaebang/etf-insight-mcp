@@ -53,3 +53,51 @@ func TestInstrumentNote(t *testing.T) {
 		}
 	}
 }
+
+func TestProvisionalNote(t *testing.T) {
+	src := newFakeSource()
+	voo := src.series["VOO"]
+	last, _ := voo.Last()
+	if got := provisionalNote(voo, time.Time{}); got != "" {
+		t.Fatalf("settled series: note %q, want none", got)
+	}
+	voo.Meta.ProvisionalUntil = last.Date.Add(20 * time.Hour)
+	voo.Meta.FetchedAt = last.Date.Add(15 * time.Hour)
+	if got := provisionalNote(voo, time.Time{}); !strings.Contains(got, "VOO's latest bar") || !strings.Contains(got, "intraday price") {
+		t.Errorf("intraday last bar: note %q", got)
+	}
+	if got := provisionalNote(voo, last.Date.AddDate(0, 0, -1)); got != "" {
+		t.Errorf("figures that end before the last bar: note %q, want none", got)
+	}
+	if got := provisionalSummary(src.series, []string{"SPY", "VOO"}); !strings.Contains(got, "latest bars of VOO") || strings.Contains(got, "SPY") {
+		t.Errorf("summary = %q, want VOO only", got)
+	}
+	if got := nonEmpty("", "a", ""); len(got) != 1 || got[0] != "a" {
+		t.Errorf("nonEmpty = %q", got)
+	}
+}
+
+func TestToolsFlagIntradayLastBar(t *testing.T) {
+	src := newFakeSource()
+	voo := src.series["VOO"]
+	last, _ := voo.Last()
+	voo.Meta.ProvisionalUntil = last.Date.Add(20 * time.Hour)
+	voo.Meta.FetchedAt = last.Date.Add(15 * time.Hour)
+	sess := newSession(t, testDeps(src))
+
+	var info getETFInfoOutput
+	callOK(t, sess, "get_etf_info", map[string]any{"symbol": "VOO"}, &info)
+	if !strings.Contains(strings.Join(info.Warnings, "\n"), "intraday price") {
+		t.Errorf("get_etf_info warnings = %q, want the intraday note", info.Warnings)
+	}
+	var sim simulateDCAOutput
+	callOK(t, sess, "simulate_dca", map[string]any{"symbol": "VOO", "amount": 100, "cadence": "monthly", "start": "2022-01-03", "compare_with": ""}, &sim)
+	if !strings.Contains(strings.Join(sim.Notes, "\n"), "intraday price") {
+		t.Errorf("simulate_dca notes = %q, want the intraday note", sim.Notes)
+	}
+	var hist getPriceHistoryOutput
+	callOK(t, sess, "get_price_history", map[string]any{"symbol": "VOO", "end": "2022-06-30"}, &hist)
+	if strings.Contains(strings.Join(hist.Warnings, "\n"), "intraday") {
+		t.Errorf("history ending before the last bar: warnings %q, want no intraday note", hist.Warnings)
+	}
+}

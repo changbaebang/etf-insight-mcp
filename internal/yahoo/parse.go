@@ -86,6 +86,14 @@ type chartMeta struct {
 	FiftyTwoWeekLow      float64 `json:"fiftyTwoWeekLow"`
 	LongName             string  `json:"longName"`
 	ShortName            string  `json:"shortName"`
+	// CurrentTradingPeriod is the current or most recent session; daily
+	// bars are stamped with their session's start.
+	CurrentTradingPeriod struct {
+		Regular struct {
+			Start int64 `json:"start"`
+			End   int64 `json:"end"`
+		} `json:"regular"`
+	} `json:"currentTradingPeriod"`
 }
 
 // chartEvents holds the corporate actions, each keyed by the event's unix
@@ -156,6 +164,7 @@ func parseChart(body []byte, now time.Time) (*market.Series, error) {
 		Bars:   bars,
 		Splits: parseSplits(r.Events.Splits, loc),
 	}
+	s.Meta.ProvisionalUntil = provisionalUntil(r.Meta, bars, loc, now)
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
@@ -305,6 +314,25 @@ func parseMeta(m chartMeta, loc *time.Location, now time.Time) market.Meta {
 		meta.FirstTradeDate = localDay(m.FirstTradeDate, loc)
 	}
 	return meta
+}
+
+// provisionalUntil returns the end of the regular session when the last
+// bar belongs to a session that had not ended at now, so its close is an
+// intraday price; otherwise zero. The session comes from the chart's
+// currentTradingPeriod, whose regular start is the stamp of that day's bar.
+func provisionalUntil(m chartMeta, bars []market.Bar, loc *time.Location, now time.Time) time.Time {
+	session := m.CurrentTradingPeriod.Regular
+	if len(bars) == 0 || session.End == 0 || session.Start == 0 {
+		return time.Time{}
+	}
+	end := time.Unix(session.End, 0).UTC()
+	if !now.Before(end) {
+		return time.Time{}
+	}
+	if !bars[len(bars)-1].Date.Equal(localDay(session.Start, loc)) {
+		return time.Time{}
+	}
+	return end
 }
 
 // localDay converts a unix timestamp to the calendar date it falls on in

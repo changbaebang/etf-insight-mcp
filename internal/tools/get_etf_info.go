@@ -144,6 +144,8 @@ func (d Deps) getETFInfo(ctx context.Context, in getETFInfoInput) (getETFInfoOut
 		out.Known, out.Universe = true, &row
 	}
 	out.Warnings = append(out.Warnings, d.staleWarnings(s.Meta.Symbol)...)
+	out.Warnings = append(out.Warnings, nonEmpty(provisionalNote(s, asOf))...)
+	out.Warnings = append(out.Warnings, nonEmpty(d.inceptionWarning(ctx, s))...)
 	if note := instrumentNote(s); note != "" {
 		out.Warnings = append(out.Warnings, note)
 	}
@@ -228,4 +230,27 @@ func toTrendOutput(t analytics.Trend) trendOutput {
 		State:            t.State,
 		Reasons:          append([]string{}, t.Reasons...),
 	}
+}
+
+// inceptionLookupTimeout bounds the optional fund-profile lookup of
+// get_etf_info; the snapshot itself never waits longer for it.
+const inceptionLookupTimeout = 5 * time.Second
+
+// inceptionWarning compares the fund's inception date, when the fund data
+// source reports one, with the first bar of s: a history that starts long
+// before the fund (a predecessor product) or long after it is flagged.
+// Any failure yields "": the snapshot does not depend on fund data.
+func (d Deps) inceptionWarning(ctx context.Context, s *market.Series) string {
+	if d.Fund == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, inceptionLookupTimeout)
+	defer cancel()
+	p, err := d.Fund.FundProfile(ctx, s.Meta.Symbol)
+	if err != nil || p == nil {
+		return ""
+	}
+	first, _ := s.First()
+	last, _ := s.Last()
+	return inceptionNote(p.InceptionDate, first.Date, last.Date)
 }

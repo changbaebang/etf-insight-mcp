@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -109,6 +110,14 @@ type RollingResult struct {
 // not depend on scheduling. Fewer than three windows is an error wrapping
 // ErrInsufficientHistory.
 func RunRolling(p Plan, in Input, cfg RollingConfig) (*RollingResult, error) {
+	return RunRollingContext(context.Background(), p, in, cfg)
+}
+
+// RunRollingContext is RunRolling that stops early when ctx is done: no
+// new window starts after that, and ctx.Err() is returned instead of a
+// result. A tool passes its request context so a client that gives up
+// does not keep every core busy.
+func RunRollingContext(ctx context.Context, p Plan, in Input, cfg RollingConfig) (*RollingResult, error) {
 	months, step, err := cfg.resolve()
 	if err != nil {
 		return nil, err
@@ -125,7 +134,7 @@ func RunRolling(p Plan, in Input, cfg RollingConfig) (*RollingResult, error) {
 		return nil, fmt.Errorf("%w: %d window(s) of %d months fit between %s and %s, need at least %d",
 			ErrInsufficientHistory, len(ranges), months, formatDate(first), formatDate(last), minRollingWindows)
 	}
-	windows, err := runWindows(pr.plan, in, ranges)
+	windows, err := runWindows(ctx, pr.plan, in, ranges)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +203,7 @@ func windowRanges(firstStart, last time.Time, months, step int) []dateRange {
 // runWindows runs p once per range on a bounded pool of workers and
 // returns the outcomes in range order. The first failing window, in range
 // order, is reported.
-func runWindows(p Plan, in Input, ranges []dateRange) ([]RollingWindow, error) {
+func runWindows(ctx context.Context, p Plan, in Input, ranges []dateRange) ([]RollingWindow, error) {
 	windows := make([]RollingWindow, len(ranges))
 	errs := make([]error, len(ranges))
 	jobs := make(chan int)
@@ -206,11 +215,19 @@ func runWindows(p Plan, in Input, ranges []dateRange) ([]RollingWindow, error) {
 			}
 		})
 	}
+feed:
 	for i := range ranges {
-		jobs <- i
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			break feed
+		}
 	}
 	close(jobs)
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for i, err := range errs {
 		if err != nil {
 			return nil, fmt.Errorf("sim: rolling window %d (%s to %s): %w",

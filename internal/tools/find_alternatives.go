@@ -248,7 +248,7 @@ func (d Deps) findAlternatives(ctx context.Context, in findAlternativesInput) (f
 		DifferentExposure:  finish(different),
 		Skipped:            skipped,
 		Notes:              notes,
-		Warnings:           append(d.analysisCacheWarnings(fetched), ratioWarnings...),
+		Warnings:           append(append(d.analysisCacheWarnings(fetched), ratioWarnings...), nonEmpty(provisionalSummary(loaded, fetched))...),
 		Disclaimer:         Disclaimer,
 	}, nil
 }

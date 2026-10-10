@@ -120,7 +120,7 @@ func (d Deps) getPriceHistory(ctx context.Context, in getPriceHistoryInput) (get
 		To:          points[len(points)-1].Date,
 		Downsampled: downsampled,
 		Points:      points,
-		Warnings:    d.staleWarnings(s.Meta.Symbol),
+		Warnings:    append(d.staleWarnings(s.Meta.Symbol), nonEmpty(provisionalNote(s, end))...),
 	}, nil
 }
 

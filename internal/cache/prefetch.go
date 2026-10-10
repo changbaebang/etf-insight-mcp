@@ -16,6 +16,14 @@ import (
 // than calling Series again: a series that could not be written to disk
 // would otherwise be fetched a second time.
 func (s *Store) Prefetch(ctx context.Context, symbols []string, concurrency int) (map[string]*market.Series, map[string]error) {
+	return s.PrefetchNotify(ctx, symbols, concurrency, nil)
+}
+
+// PrefetchNotify is Prefetch that also calls done, when it is not nil,
+// once for every symbol whose fetch finished, successfully or not, from
+// the goroutine that fetched it. Callers use it to report progress on
+// long batches.
+func (s *Store) PrefetchNotify(ctx context.Context, symbols []string, concurrency int, done func(symbol string)) (map[string]*market.Series, map[string]error) {
 	concurrency = max(concurrency, 1)
 	var (
 		wg     sync.WaitGroup
@@ -45,12 +53,15 @@ func (s *Store) Prefetch(ctx context.Context, symbols []string, concurrency int)
 			defer func() { <-sem }()
 			got, err := s.Series(ctx, sym)
 			mu.Lock()
-			defer mu.Unlock()
 			if err != nil {
 				errs[sym] = err
-				return
+			} else {
+				series[sym] = got
 			}
-			series[sym] = got
+			mu.Unlock()
+			if done != nil {
+				done(sym)
+			}
 		}()
 	}
 	wg.Wait()

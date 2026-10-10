@@ -158,6 +158,7 @@ func (d Deps) marketOverview(ctx context.Context) (marketOverviewOutput, error) 
 		out.Rows = append(out.Rows, row)
 	}
 	out.LatestQuoteTime = dataTimestamp(latest)
+	out.Warnings = append(out.Warnings, nonEmpty(provisionalSummary(series, trendSyms))...)
 	if len(b.unknown) > 0 {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("no quote for %s: the provider does not know it", strings.Join(b.unknown, ", ")))
 	}

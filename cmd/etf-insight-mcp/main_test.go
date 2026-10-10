@@ -75,7 +75,7 @@ func TestServerRoundTrip(t *testing.T) {
 	for _, tool := range list.Tools {
 		names = append(names, tool.Name)
 	}
-	for _, want := range []string{"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "forecast_dca", "cache_status", "clear_cache", "refresh_prices"} {
+	for _, want := range []string{"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "project_dca_outcomes", "cache_status", "clear_cache", "refresh_prices"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("tool %s is not listed; got %v", want, names)
 		}

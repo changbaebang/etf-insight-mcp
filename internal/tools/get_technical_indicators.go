@@ -86,7 +86,7 @@ func (d Deps) getTechnicalIndicators(ctx context.Context, in getTechnicalIndicat
 		EMA26:           techValue(bars, analytics.DefaultMACDSlow, round2(tech.EMA26)),
 		Signals:         append([]string{}, tech.Signals...),
 		Trend:           toTrendOutput(trend),
-		Warnings:        d.staleWarnings(s.Meta.Symbol),
+		Warnings:        append(d.staleWarnings(s.Meta.Symbol), nonEmpty(provisionalNote(s, asOf))...),
 		Disclaimer:      Disclaimer,
 	}
 	last, _ := s.Last()

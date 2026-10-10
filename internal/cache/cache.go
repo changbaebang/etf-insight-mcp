@@ -240,11 +240,18 @@ func (s *Store) forgetUnwritten(syms ...string) {
 	}
 }
 
-// isFresh reports whether e is in the current format and was brought up
-// to date less than the TTL ago. A fetch time in the future (clock skew,
+// isFresh reports whether e is in the current format, was brought up to
+// date less than the TTL ago and, when its last bar was an intraday price,
+// that session has not ended yet. A fetch time in the future (clock skew,
 // an edited or restored file) counts as stale rather than fresh forever.
 func (s *Store) isFresh(e *entry) bool {
-	return e.Version == formatVersion && isFresh(s.now(), e.FetchedAt, s.ttl)
+	if e.Version != formatVersion || !isFresh(s.now(), e.FetchedAt, s.ttl) {
+		return false
+	}
+	// An intraday last bar goes stale when its session ends, however
+	// young the file: the next read tops it up with the settled close.
+	until := e.Series.Meta.ProvisionalUntil
+	return until.IsZero() || s.now().Before(until)
 }
 
 // Refresh fetches the whole history of symbol from the wrapped source

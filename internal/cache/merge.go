@@ -204,6 +204,9 @@ func refreshMeta(have, got market.Meta) market.Meta {
 	if !got.FetchedAt.IsZero() {
 		have.FetchedAt = got.FetchedAt
 	}
+	// The tail ends with the latest bar, so its provisional state is the
+	// series' state now (zero once the session has closed).
+	have.ProvisionalUntil = got.ProvisionalUntil
 	return have
 }
 

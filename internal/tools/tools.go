@@ -40,19 +40,19 @@ const Disclaimer = "Not investment advice. Every figure is computed from past pr
 // connect. Keep it in sync with the tool set.
 const Instructions = `etf-insight-mcp answers questions about small recurring purchases (dollar-cost averaging, DCA) of US-listed ETFs: what a plan would have done, what range of outcomes it could have, what it costs, and which similar funds exist.
 
-Data: daily prices, dividends and splits come from Yahoo Finance's unofficial chart API; fund descriptions (expense ratio, holdings, provider performance), quotes, search and news come from its quote endpoints. Prices are delayed. Price history is stored on disk once (by default in ~/Library/Caches/etf-insight-mcp; cache_status shows the directory in use) and afterwards only the newest bars are fetched; fund documents are cached for a day and quotes for 15 minutes. KRW plans use the KRW=X rate (KRW per 1 USD). Symbols outside the built-in universe work when Yahoo knows them.
+Data: daily prices, dividends and splits come from Yahoo Finance's unofficial chart API; fund descriptions (expense ratio, holdings, provider performance), quotes, search and news come from its quote endpoints. Prices are delayed, and while a US session is open the latest bar is an intraday price until the close (tools flag it). Price history is stored on disk once (by default in ~/Library/Caches/etf-insight-mcp; cache_status shows the directory in use) and afterwards only the newest bars are fetched; fund documents are cached for a day and quotes for 15 minutes. KRW plans use the KRW=X rate (KRW per 1 USD). Symbols outside the built-in universe work when Yahoo knows them.
 
-Units: amount is ONE contribution in the plan currency (USD or KRW) before costs. fee_rate is a fraction of each contribution and commission_fixed a fixed amount per ETF purchased (a portfolio pays it once for each ETF on every contribution day; forecast_dca folds it into its fee rate); for small daily purchases the fixed commission is usually the largest cost. Money is rounded to 2 decimals and share counts to 4. Fields ending in _pct are plain percentages (7.5 means 7.5%). Dates are YYYY-MM-DD; timestamps are RFC 3339 UTC.
+Units: amount is ONE contribution in the plan currency (USD or KRW) before costs. fee_rate is a fraction of each contribution and commission_fixed a fixed amount per ETF purchased (a portfolio pays it once for each ETF on every contribution day; project_dca_outcomes folds it into its fee rate); for small daily purchases the fixed commission is usually the largest cost. Money is rounded to 2 decimals and share counts to 4. Fields ending in _pct are plain percentages (7.5 means 7.5%). Dates are YYYY-MM-DD; timestamps are RFC 3339 UTC.
 
 Which tool:
 - Find funds: list_etfs (built-in universe), search_symbols (anything Yahoo knows), screen_universe (rank the universe by momentum, returns, volatility, drawdown, dividend yield or trend).
 - Describe one fund: get_etf_info (returns, volatility, drawdowns, dividends, trend), get_fund_profile (expense ratio, assets, inception), get_holdings, get_fund_performance, get_dividends, get_splits, get_technical_indicators, get_price_history, get_quote, get_news.
 - Compare: compare_etfs (side by side, with correlation and beta to a benchmark), find_alternatives (funds similar to one you hold, with cost and return differences), market_overview (major ETFs and the VIX today).
 - Simulate the past: simulate_dca and simulate_portfolio_dca (with an SPY comparison on the same days), simulate_lump_sum_vs_dca, simulate_rolling_dca (the plan from every historical start date).
-- Look ahead: forecast_dca, a block bootstrap of history that gives a range of outcomes, not a price prediction.
+- Look ahead: project_dca_outcomes, a block bootstrap of history that gives a range of outcomes, not a price prediction.
 - "Is my plan reasonable?": review_dca_plan splits a plan into costs, history, a short-term and a long-term view; follow it with find_alternatives.
 - Cache: cache_status (files, size, warnings), refresh_prices (refetch now), clear_cache (deletes files, needs confirm=true).
-The etf://universe resource is the universe CSV, and the dca_report prompt chains get_etf_info, get_fund_profile, get_holdings, simulate_dca and forecast_dca into a short write-up. Simulation, forecast, review and comparison tools accept only funds quoted in USD.
+The etf://universe resource is the universe CSV, and the dca_report prompt chains get_etf_info, get_fund_profile, get_holdings, simulate_dca and project_dca_outcomes into a short write-up. Simulation, forecast, review and comparison tools accept only funds quoted in USD.
 
 Errors come back as tool errors whose message says what to change (an unknown symbol points at list_etfs and search_symbols, a bad date shows the expected format).
 
@@ -85,15 +85,15 @@ func Register(s *mcp.Server, deps Deps) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	// recoverPanics runs first so it also catches a panic in emptyArguments.
-	s.AddReceivingMiddleware(recoverPanics, emptyArguments)
+	// recoverPanics runs first so it also catches a panic in the others.
+	s.AddReceivingMiddleware(recoverPanics, emptyArguments, explainArgumentErrors, attachProgress)
 	registerPing(s, deps)
 	registerListETFs(s)
 	registerGetETFInfo(s, deps)
 	registerGetPriceHistory(s, deps)
 	registerSimulateDCA(s, deps)
 	registerSimulatePortfolioDCA(s, deps)
-	registerForecastDCA(s, deps)
+	registerProjectDCA(s, deps)
 	registerUniverseResource(s)
 	registerDCAReportPrompt(s, deps)
 	// Round-2 tool groups, each in its own file.
@@ -267,10 +267,12 @@ func (d Deps) fetchAll(ctx context.Context, symbols []string) (map[string]*marke
 	syms := uniqueSymbols(symbols)
 	series := make(map[string]*market.Series, len(syms))
 	errs := make(map[string]error)
+	prog := progressFrom(ctx)
+	prog.add(len(syms))
 	if d.Cache != nil && len(syms) > 1 {
 		// One concurrent pass; the series come back from the same call so a
 		// symbol that could not be written to disk is not fetched twice.
-		got, failed := d.Cache.Prefetch(ctx, syms, prefetchConcurrency)
+		got, failed := d.Cache.PrefetchNotify(ctx, syms, prefetchConcurrency, func(sym string) { prog.step(sym, "loaded") })
 		for _, sym := range syms {
 			switch {
 			case failed[sym] != nil:
@@ -285,6 +287,7 @@ func (d Deps) fetchAll(ctx context.Context, symbols []string) (map[string]*marke
 	}
 	for _, sym := range syms {
 		s, err := d.fetchSeries(ctx, sym)
+		prog.step(sym, "loaded")
 		if err != nil {
 			errs[sym] = err
 			continue
