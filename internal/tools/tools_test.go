@@ -18,6 +18,8 @@ var toolNames = []string{
 	"ping", "list_etfs", "get_etf_info", "get_price_history", "simulate_dca", "simulate_portfolio_dca", "forecast_dca",
 	// data
 	"search_symbols", "get_quote", "get_dividends", "get_splits", "get_fund_profile", "get_holdings", "get_fund_performance", "get_news", "market_overview",
+	// analysis
+	"get_technical_indicators", "compare_etfs", "screen_universe", "find_alternatives",
 }
 // mutatingTools change the local cache, so they must not claim to be
 // read-only; clear_cache also deletes files.
