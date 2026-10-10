@@ -20,6 +20,8 @@ var toolNames = []string{
 	"search_symbols", "get_quote", "get_dividends", "get_splits", "get_fund_profile", "get_holdings", "get_fund_performance", "get_news", "market_overview",
 	// analysis
 	"get_technical_indicators", "compare_etfs", "screen_universe", "find_alternatives",
+	// simulations
+	"simulate_lump_sum_vs_dca", "simulate_rolling_dca", "review_dca_plan",
 }
 // mutatingTools change the local cache, so they must not claim to be
 // read-only; clear_cache also deletes files.

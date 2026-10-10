@@ -2,8 +2,11 @@ package tools
 
 import "github.com/modelcontextprotocol/go-sdk/mcp"
 
-// registerSimulations adds the simulations tool group: lump-sum, rolling-window and plan-review simulations.
-// The group is filled in by round 2; until then it registers nothing.
+// registerSimulations adds the round-2 simulation tools: lump sum versus
+// DCA, rolling start dates and the plan review. simulate_dca,
+// simulate_portfolio_dca and forecast_dca are registered by Register.
 func (d Deps) registerSimulations(s *mcp.Server) {
-	_ = s
+	d.registerSimulateLumpSumVsDCA(s)
+	d.registerSimulateRollingDCA(s)
+	d.registerReviewDCAPlan(s)
 }

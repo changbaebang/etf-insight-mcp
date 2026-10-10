@@ -201,6 +201,36 @@ func TestSimulateDCA(t *testing.T) {
 		}
 	})
 
+	t.Run("fixed commission per contribution", func(t *testing.T) {
+		plan := sim.Plan{
+			Allocations: []sim.Allocation{{Symbol: "SPY", Weight: 1}},
+			Amount:      100,
+			Currency:    sim.CurrencyUSD,
+			Cadence:     sim.Monthly,
+			Start:       date(t, "2022-01-03"),
+			End:         date(t, "2022-12-30"),
+			FeeRate:     0.01,
+			FeeFixed:    1.5,
+			Reinvest:    true,
+		}
+		want := runSim(t, src, plan)
+		var out simulateDCAOutput
+		callOK(t, sess, "simulate_dca", map[string]any{"symbol": "SPY", "amount": 100, "cadence": "monthly", "start": "2022-01-03", "end": "2022-12-30", "fee_rate": 0.01, "commission_fixed": 1.5, "compare_with": "VOO"}, &out)
+		requireMatch(t, "commission", out.simResultOutput, want)
+		// 12 contributions × (1% of 100 + 1.5) = 30 on 1200 invested.
+		if out.Fees != 30 || out.CostRatioPct != 2.5 {
+			t.Errorf("fees/cost_ratio_pct = %v/%v, want 30/2.5", out.Fees, out.CostRatioPct)
+		}
+		if out.Comparison == nil || out.Comparison.Plan.Fees != 30 || out.Comparison.Baseline.Fees != 30 || out.Comparison.Baseline.CostRatioPct != 2.5 {
+			t.Errorf("comparison = %+v, want both legs charged the same commissions", out.Comparison)
+		}
+		var free simulateDCAOutput
+		callOK(t, sess, "simulate_dca", map[string]any{"symbol": "SPY", "amount": 100, "cadence": "monthly", "start": "2022-01-03", "end": "2022-12-30", "compare_with": ""}, &free)
+		if out.FinalValue >= free.FinalValue || free.Fees != 0 || free.CostRatioPct != 0 {
+			t.Errorf("final value with commissions %v, without %v (fees %v): commissions should cost something", out.FinalValue, free.FinalValue, free.Fees)
+		}
+	})
+
 	t.Run("baseline equal to the symbol is skipped", func(t *testing.T) {
 		var out simulateDCAOutput
 		callOK(t, sess, "simulate_dca", map[string]any{"symbol": "SPY", "amount": 100, "start": "2023-01-01"}, &out)
@@ -231,6 +261,9 @@ func TestSimulateDCA(t *testing.T) {
 		{name: "bad currency", args: map[string]any{"symbol": "VOO", "amount": 100, "start": "2022-01-01", "currency": "EUR"}, want: "use USD or KRW"},
 		{name: "zero amount", args: map[string]any{"symbol": "VOO", "amount": 0, "start": "2022-01-01"}, want: "amount must be > 0"},
 		{name: "fee too high", args: map[string]any{"symbol": "VOO", "amount": 100, "start": "2022-01-01", "fee_rate": 1}, want: "fee_rate"},
+		{name: "commission swallows the contribution", args: map[string]any{"symbol": "VOO", "amount": 1, "start": "2022-01-01", "commission_fixed": 1}, want: "commission_fixed 1 leaves nothing of a 1 contribution to invest"},
+		{name: "commission and fee rate swallow the contribution", args: map[string]any{"symbol": "VOO", "amount": 10, "start": "2022-01-01", "fee_rate": 0.5, "commission_fixed": 5}, want: "commission_fixed 5 leaves nothing"},
+		{name: "negative commission", args: map[string]any{"symbol": "VOO", "amount": 100, "start": "2022-01-01", "commission_fixed": -0.5}, want: "commission_fixed must be >= 0"},
 		{name: "no history in range", args: map[string]any{"symbol": "VOO", "amount": 100, "start": "2030-01-01"}, want: "no history in range"},
 		{name: "wrong type", args: map[string]any{"symbol": "VOO", "amount": "100", "start": "2022-01-01"}, want: "amount"},
 	}
@@ -283,6 +316,20 @@ func TestSimulatePortfolioDCA(t *testing.T) {
 		var out simulatePortfolioDCAOutput
 		callOK(t, sess, "simulate_portfolio_dca", args(0.6, 0.4), &out)
 		requireMatch(t, "fractions", out.simResultOutput, want)
+	})
+
+	t.Run("fixed commission is charged once per contribution", func(t *testing.T) {
+		withFee := plan
+		withFee.FeeFixed = 0.5
+		wantFee := runSim(t, src, withFee)
+		a := args(60, 40)
+		a["commission_fixed"] = 0.5
+		var out simulatePortfolioDCAOutput
+		callOK(t, sess, "simulate_portfolio_dca", a, &out)
+		requireMatch(t, "portfolio commission", out.simResultOutput, wantFee)
+		if out.Fees != round2(0.5*float64(out.Contributions)) {
+			t.Errorf("fees = %v, want 0.5 × %d contributions, not per symbol", out.Fees, out.Contributions)
+		}
 	})
 
 	t.Run("cache prefetches each symbol once", func(t *testing.T) {
