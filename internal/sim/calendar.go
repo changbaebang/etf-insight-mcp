@@ -14,8 +14,14 @@ import (
 // allocated symbol's bar on each day.
 type calendar struct {
 	days []time.Time
-	// bars[i][k] is the bar of allocation i on days[k].
+	// bars[i][k] is the bar of allocation i on days[k]. Its Dividend also
+	// carries the dividends of allocation i's bars that fell on days
+	// missing from the calendar since days[k-1]; see alignBars.
 	bars [][]market.Bar
+	// splits[i] is the split history of allocation i.
+	splits [][]market.Split
+	// notes describes every dividend that was moved to a later day.
+	notes []string
 }
 
 // named pairs a series with the symbol it was requested under, for notes.
@@ -35,7 +41,8 @@ type named struct {
 // bounds the range (its first and last bar); its trading days are not
 // intersected because the converter falls back to the last rate before a
 // day. A range with no history, or one on which the series share no
-// trading day, is an error.
+// trading day, is an error. The notes end with the calendar's own notes
+// on dividends moved off days that not every symbol traded.
 func buildCalendar(p Plan, allocated, extra []named, fx *market.Series) (*calendar, []string, error) {
 	bounding := make([]named, 0, len(allocated)+len(extra)+1)
 	bounding = append(bounding, allocated...)
@@ -80,7 +87,7 @@ func buildCalendar(p Plan, allocated, extra []named, fx *market.Series) (*calend
 	if note, ok := midPeriodStartNote(p.Cadence, allocated[0].s, cal.days[0]); ok {
 		notes = append(notes, note)
 	}
-	return cal, notes, nil
+	return cal, append(notes, cal.notes...), nil
 }
 
 // fxLabel names the exchange-rate series in notes.
@@ -90,55 +97,97 @@ const fxLabel = "KRW=X exchange-rate"
 // every allocated and every extra series has a bar. Bars are kept for the
 // allocated series only.
 func intersect(allocated, extra []named, start, end time.Time) *calendar {
-	// The first allocated series drives the walk; the rest are indexed by
-	// date.
-	base := allocated[0].s.Between(start, end)
-	others := make([]map[time.Time]market.Bar, 0, len(allocated)-1+len(extra))
-	for _, n := range allocated[1:] {
-		others = append(others, barsByDate(n.s.Between(start, end)))
+	cal := &calendar{
+		days:   commonDays(allocated, extra, start, end),
+		bars:   make([][]market.Bar, len(allocated)),
+		splits: make([][]market.Split, len(allocated)),
 	}
-	for _, n := range extra {
-		others = append(others, barsByDate(n.s.Between(start, end)))
-	}
-
-	cal := &calendar{bars: make([][]market.Bar, len(allocated))}
-	for _, b := range base {
-		day := market.Day(b.Date)
-		dayBars, ok := barsOn(day, b, others)
-		if !ok {
-			continue
-		}
-		cal.days = append(cal.days, day)
-		for i := range allocated {
-			cal.bars[i] = append(cal.bars[i], dayBars[i])
-		}
+	for i, n := range allocated {
+		var notes []string
+		cal.bars[i], notes = alignBars(n, cal.days, start, end)
+		cal.notes = append(cal.notes, notes...)
+		cal.splits[i] = n.s.Splits
 	}
 	return cal
 }
 
-// barsByDate indexes bars by their Day-normalised date.
-func barsByDate(bars []market.Bar) map[time.Time]market.Bar {
-	m := make(map[time.Time]market.Bar, len(bars))
+// commonDays lists, in ascending order, the days inside [start, end] on
+// which every allocated and every extra series has a bar. The first
+// allocated series drives the walk; the rest are looked up by date.
+func commonDays(allocated, extra []named, start, end time.Time) []time.Time {
+	others := make([]map[time.Time]bool, 0, len(allocated)-1+len(extra))
+	for _, n := range allocated[1:] {
+		others = append(others, daySet(n.s.Between(start, end)))
+	}
+	for _, n := range extra {
+		others = append(others, daySet(n.s.Between(start, end)))
+	}
+
+	var days []time.Time
+	for _, b := range allocated[0].s.Between(start, end) {
+		day := market.Day(b.Date)
+		if tradesOnAll(day, others) {
+			days = append(days, day)
+		}
+	}
+	return days
+}
+
+// daySet indexes the Day-normalised dates of bars.
+func daySet(bars []market.Bar) map[time.Time]bool {
+	m := make(map[time.Time]bool, len(bars))
 	for _, b := range bars {
-		m[market.Day(b.Date)] = b
+		m[market.Day(b.Date)] = true
 	}
 	return m
 }
 
-// barsOn collects the bar of every series on day: first for the base
-// series, then one per entry of others. ok is false when some series has
-// no bar that day.
-func barsOn(day time.Time, first market.Bar, others []map[time.Time]market.Bar) ([]market.Bar, bool) {
-	bars := make([]market.Bar, 0, len(others)+1)
-	bars = append(bars, first)
-	for _, m := range others {
-		b, ok := m[day]
-		if !ok {
-			return nil, false
+// tradesOnAll reports whether every set contains day.
+func tradesOnAll(day time.Time, sets []map[time.Time]bool) bool {
+	for _, set := range sets {
+		if !set[day] {
+			return false
 		}
-		bars = append(bars, b)
 	}
-	return bars, true
+	return true
+}
+
+// alignBars returns n's bar on each of days, which must all be trading
+// days of n inside [start, end].
+//
+// A bar of n on a day missing from days (another symbol did not trade)
+// is dropped, but its dividend is not: it is added to n's bar on the next
+// calendar day, the way yahoo moves a dividend dated on a non-trading day
+// to the next bar. The shares held then are the shares held on the
+// ex-date, because nothing is bought on a dropped day, and the engine
+// handles dividends before the day's contribution. Each move adds a note.
+// Dividends dated before the first calendar day are dropped (nothing is
+// held yet), and so are those after the last (the plan is valued before
+// them).
+func alignBars(n named, days []time.Time, start, end time.Time) ([]market.Bar, []string) {
+	out := make([]market.Bar, 0, len(days))
+	var notes []string
+	var pending []market.Bar // dropped bars whose dividend is still owed
+	for _, b := range n.s.Between(start, end) {
+		if len(out) == len(days) {
+			break
+		}
+		day := market.Day(b.Date)
+		if !day.Equal(days[len(out)]) {
+			if b.Dividend > 0 && len(out) > 0 {
+				pending = append(pending, b)
+			}
+			continue
+		}
+		for _, p := range pending {
+			b.Dividend += p.Dividend
+			notes = append(notes, fmt.Sprintf("%s dividend of %.4f per share dated %s, a day not every symbol traded, is credited on %s, the next day they all did",
+				n.sym, p.Dividend, formatDate(p.Date), formatDate(day)))
+		}
+		pending = pending[:0]
+		out = append(out, b)
+	}
+	return out, notes
 }
 
 // latestFirstBar returns the latest date on which a series begins and the
@@ -213,8 +262,7 @@ func startsNewPeriod(c Cadence, prev, cur time.Time) bool {
 // contribution falling in the middle of its week or month is followed by
 // another on the first trading day of the next period. The previous bar of
 // the base series decides whether the start is mid-period; when the series
-// begins on the start day itself the calendar date is used instead (a
-// Monday or the first weekday of the month counts as a period start).
+// begins on the start day itself, opensPeriod judges by the calendar.
 func midPeriodStartNote(c Cadence, base *market.Series, start time.Time) (string, bool) {
 	if c == Daily || c == Once {
 		return "", false
@@ -223,7 +271,7 @@ func midPeriodStartNote(c Cadence, base *market.Series, start time.Time) (string
 	if i, ok := base.IndexOn(start); ok && i > 0 && base.Bars[i].Date.Equal(start) {
 		mid = !startsNewPeriod(c, market.Day(base.Bars[i-1].Date), start)
 	} else {
-		mid = !firstWeekdayOfPeriod(c, start)
+		mid = !opensPeriod(c, start)
 	}
 	if !mid {
 		return "", false
@@ -236,18 +284,29 @@ func midPeriodStartNote(c Cadence, base *market.Series, start time.Time) (string
 		formatDate(start), period, period), true
 }
 
-// firstWeekdayOfPeriod reports whether d is the first weekday of its ISO
-// week (Monday) or calendar month, judged by the calendar alone.
-func firstWeekdayOfPeriod(c Cadence, d time.Time) bool {
-	if c == Weekly {
-		return d.Weekday() == time.Monday
+// openingHolidays is how many weekdays of a week or month may precede a
+// day that opensPeriod still accepts as the period's first trading day.
+// One covers the exchange holidays that open a period: New Year's Day and
+// the Monday holidays such as Labor Day.
+const openingHolidays = 1
+
+// opensPeriod reports whether d can be the first trading day of its ISO
+// week (Weekly) or calendar month (Monthly), judged by the calendar alone
+// for a series that has no earlier bar: at most openingHolidays weekdays
+// of the period come before d. Without an earlier bar a weekday holiday
+// cannot be told apart from a day the series did not exist yet, so a
+// series that begins on the second weekday of a period counts as on time.
+func opensPeriod(c Cadence, d time.Time) bool {
+	if c != Weekly && c != Monthly {
+		return true
 	}
-	for day := d.AddDate(0, 0, -1); day.Month() == d.Month(); day = day.AddDate(0, 0, -1) {
+	before := 0
+	for day := d.AddDate(0, 0, -1); !startsNewPeriod(c, day, d); day = day.AddDate(0, 0, -1) {
 		if wd := day.Weekday(); wd != time.Saturday && wd != time.Sunday {
-			return false
+			before++
 		}
 	}
-	return true
+	return before <= openingHolidays
 }
 
 // isLastOfMonth reports whether days[k] is the last trading day of its

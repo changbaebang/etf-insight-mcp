@@ -116,11 +116,12 @@ type Comparison struct {
 	// trailing windows may reach back before From.
 	Summaries []Summary
 	// Correlation is CorrelationMatrix over the common range with
-	// undefined entries reported as 0.
+	// undefined entries reported as 0. With two common days there is a
+	// single return, so every off-diagonal entry is undefined and 0.
 	Correlation [][]float64
 	// BetaToFirst and AlphaToFirst are Beta of each series against the
 	// first one (the caller's benchmark), 0 when undefined; the first
-	// entries are 1 and 0.
+	// entries are always 1 and 0, the benchmark measured against itself.
 	BetaToFirst  []float64
 	AlphaToFirst []float64
 }
@@ -165,6 +166,12 @@ func Compare(series []*market.Series, start, end time.Time) (*Comparison, error)
 		}
 		c.Symbols[i] = s.Meta.Symbol
 		c.Summaries[i] = sum
+		if i == 0 {
+			// The benchmark against itself: 1 and 0 by definition, also
+			// on a range too short or too flat to regress.
+			c.BetaToFirst[i], c.AlphaToFirst[i] = 1, 0
+			continue
+		}
 		beta, alpha := Beta(aligned[i], aligned[0])
 		c.BetaToFirst[i], c.AlphaToFirst[i] = orZero(beta), orZero(alpha)
 	}

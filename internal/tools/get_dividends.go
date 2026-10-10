@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/changbaebang/etf-insight-mcp/internal/analytics"
@@ -18,6 +19,10 @@ const (
 	maxDividendRows = 120
 	// dividendGrowthYears is the span of growth_5y_pct.
 	dividendGrowthYears = 5
+	// recentFrequencyYears is how many of the latest full years
+	// payments_per_year looks at, so a fund that changed its schedule is
+	// labelled by the current one.
+	recentFrequencyYears = 3
 	// A calendar year counts as full when the data starts on or before
 	// January fullYearFirstDay and ends on or after December
 	// fullYearLastDay: the first and last trading days move around
@@ -34,14 +39,15 @@ type getDividendsInput struct {
 
 // dividendPayment is one cash dividend on the wire.
 type dividendPayment struct {
-	Date   string  `json:"date" jsonschema:"ex-dividend date as recorded in the price history"`
-	Amount float64 `json:"amount" jsonschema:"cash per share in the symbol's currency"`
+	Date         string   `json:"date" jsonschema:"ex-dividend date as recorded in the price history"`
+	Amount       float64  `json:"amount" jsonschema:"cash per share in the symbol's currency, restated for later splits to today's share count like the prices"`
+	AmountAsPaid *float64 `json:"amount_as_paid,omitempty" jsonschema:"cash per share actually paid on the date, before restating for later splits; absent when no split followed"`
 }
 
 // dividendYear is one calendar year of payments.
 type dividendYear struct {
 	Year     int     `json:"year"`
-	Total    float64 `json:"total" jsonschema:"cash per share paid in the year"`
+	Total    float64 `json:"total" jsonschema:"cash per share paid in the year, restated for later splits to today's share count"`
 	Payments int     `json:"payments"`
 	FullYear bool    `json:"full_year" jsonschema:"false when the selected range covers only part of the year; partial years are excluded from payments_per_year and growth_5y_pct"`
 }
@@ -55,10 +61,10 @@ type getDividendsOutput struct {
 	Truncated       bool              `json:"truncated" jsonschema:"true when only the most recent 120 payments are listed"`
 	Dividends       []dividendPayment `json:"dividends"`
 	TTMAsOf         string            `json:"ttm_as_of"`
-	Close           float64           `json:"close" jsonschema:"close on ttm_as_of, the denominator of ttm_yield_pct"`
-	TTMTotal        float64           `json:"ttm_total" jsonschema:"cash per share paid in the 365 days ending on ttm_as_of"`
+	Close           float64           `json:"close" jsonschema:"close on ttm_as_of, restated for later splits like the amounts; the denominator of ttm_yield_pct"`
+	TTMTotal        float64           `json:"ttm_total" jsonschema:"cash per share paid in the 52 weeks ending on ttm_as_of, restated for later splits"`
 	TTMYieldPct     float64           `json:"ttm_yield_pct"`
-	PaymentsPerYear float64           `json:"payments_per_year" jsonschema:"median number of payments per full calendar year in the range; 0 when the range holds no full year"`
+	PaymentsPerYear float64           `json:"payments_per_year" jsonschema:"median number of payments per full calendar year over the most recent 3 full years in the range; 0 when the range holds no full year"`
 	Frequency       string            `json:"frequency" jsonschema:"monthly, quarterly, semiannual, annual, irregular, none, or unknown when no full calendar year is in the range"`
 	AnnualTotals    []dividendYear    `json:"annual_totals"`
 	Growth5YPct     *float64          `json:"growth_5y_pct,omitempty" jsonschema:"compound annual growth of the yearly total over the last 5 full years; absent when the range lacks 6 full years or the base year paid nothing"`
@@ -71,7 +77,7 @@ func (d Deps) registerGetDividends(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_dividends",
 		Title:       "Get dividends",
-		Description: "Cash dividend history of one symbol from its cached daily price history, optionally limited to start..end: every payment (date and cash per share, the 120 most recent when there are more), the trailing-12-month total and yield against the close on the range's last bar, the typical number of payments per year with a frequency label, per-calendar-year totals, and the 5-year compound growth of the yearly total when 6 full years are available. Use it for income questions (how much, how often, is it growing). Amounts are per share in the symbol's currency; _pct fields are percentages. Payments are dated on the ex-dividend date the price source records.",
+		Description: "Cash dividend history of one symbol from its cached daily price history, optionally limited to start..end: every payment (date and cash per share, the 120 most recent when there are more), the trailing 52-week total and yield against the close on the range's last bar, the typical number of payments per year over the last 3 full years with a frequency label, per-calendar-year totals, and the 5-year compound growth of the yearly total when 6 full years are available. Use it for income questions (how much, how often, is it growing). Amounts and the close are per share in the symbol's currency, restated for later splits to today's share count like every price in this server; amount_as_paid gives the cash actually paid per share before a split, and a note names the splits. _pct fields are percentages. Payments are dated on the ex-dividend date the price source records.",
 		Annotations: readOnly("Get dividends", true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in getDividendsInput) (*mcp.CallToolResult, getDividendsOutput, error) {
 		out, err := d.getDividends(ctx, in)
@@ -127,8 +133,19 @@ func (d Deps) getDividends(ctx context.Context, in getDividendsInput) (getDivide
 	for _, b := range bars {
 		if b.Dividend > 0 {
 			out.Count++
-			out.Dividends = append(out.Dividends, dividendPayment{Date: formatDate(b.Date), Amount: round4(b.Dividend)})
+			pay := dividendPayment{Date: formatDate(b.Date), Amount: round4(b.Dividend)}
+			if f := splitFactorAfter(s.Splits, b.Date); f != 1 {
+				pay.AmountAsPaid = ptr(round4(b.Dividend * f))
+			}
+			out.Dividends = append(out.Dividends, pay)
 		}
+	}
+	if note := splitNote(s.Splits, from.Date); note != "" {
+		out.Notes = append(out.Notes, note)
+	}
+	if !hasTrailingYear(s, to.Date) {
+		first, _ := s.First()
+		out.Notes = append(out.Notes, fmt.Sprintf("ttm_total and ttm_yield_pct cover only the %d days of history before ttm_as_of, not a full 52 weeks", int(to.Date.Sub(first.Date).Hours()/24)))
 	}
 	if len(out.Dividends) > maxDividendRows {
 		out.Dividends = out.Dividends[len(out.Dividends)-maxDividendRows:]
@@ -145,6 +162,13 @@ func (d Deps) getDividends(ctx context.Context, in getDividendsInput) (getDivide
 	out.PaymentsPerYear, out.Frequency = dividendFrequency(full)
 	if len(full) == 0 {
 		out.Notes = append(out.Notes, "the range holds no full calendar year, so payments_per_year is 0 and frequency is unknown")
+	}
+	if len(full) > recentFrequencyYears {
+		if _, longRun := medianFrequency(full); longRun != out.Frequency {
+			recent := full[len(full)-recentFrequencyYears:]
+			out.Notes = append(out.Notes, fmt.Sprintf("the schedule changed: payments_per_year and frequency follow the last %d full years (%d-%d), while over all %d full years in the range the typical schedule was %s",
+				recentFrequencyYears, recent[0].year, recent[len(recent)-1].year, len(full), longRun))
+		}
 	}
 	growth, note := dividendGrowth(full)
 	out.Growth5YPct = growth
@@ -198,14 +222,23 @@ func fullDividendYears(years []divYear) []divYear {
 	return out
 }
 
-// dividendFrequency returns the median payment count of the full years
-// and a label for it.
+// dividendFrequency returns the median payment count of the most recent
+// recentFrequencyYears full years and a label for it.
 func dividendFrequency(full []divYear) (float64, string) {
-	if len(full) == 0 {
+	if len(full) > recentFrequencyYears {
+		full = full[len(full)-recentFrequencyYears:]
+	}
+	return medianFrequency(full)
+}
+
+// medianFrequency returns the median payment count of years and a label
+// for it.
+func medianFrequency(years []divYear) (float64, string) {
+	if len(years) == 0 {
 		return 0, "unknown"
 	}
-	counts := make([]float64, 0, len(full))
-	for _, y := range full {
+	counts := make([]float64, 0, len(years))
+	for _, y := range years {
 		counts = append(counts, float64(y.payments))
 	}
 	sort.Float64s(counts)
@@ -244,4 +277,32 @@ func dividendGrowth(full []divYear) (*float64, string) {
 	}
 	g := math.Pow(last.total/base.total, 1/float64(dividendGrowthYears)) - 1
 	return ptr(pct(g)), fmt.Sprintf("growth_5y_pct compares the %d total %.4f with the %d total %.4f", base.year, base.total, last.year, last.total)
+}
+
+// splitFactorAfter is how many of today's shares one share held on date
+// became through the splits after it: the factor that turns a restated
+// per-share amount back into the amount paid on date.
+func splitFactorAfter(splits []market.Split, date time.Time) float64 {
+	f := 1.0
+	for _, sp := range splits {
+		if sp.Date.After(date) && sp.Numerator > 0 && sp.Denominator > 0 {
+			f *= sp.Numerator / sp.Denominator
+		}
+	}
+	return f
+}
+
+// splitNote names the splits after from, which restated the amounts and
+// the close of the range to today's share count, or returns "".
+func splitNote(splits []market.Split, from time.Time) string {
+	var named []string
+	for _, sp := range splits {
+		if sp.Date.After(from) {
+			named = append(named, fmt.Sprintf("a %s split on %s", sp.Ratio(), formatDate(sp.Date)))
+		}
+	}
+	if len(named) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("amounts, totals and close dated before %s are restated to today's share count like the prices; amount_as_paid shows the cash per share actually paid then", strings.Join(named, " and "))
 }

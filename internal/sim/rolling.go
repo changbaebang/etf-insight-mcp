@@ -30,10 +30,11 @@ const (
 type RollingConfig struct {
 	// DurationYears is the length of every window in years and must be a
 	// positive whole number of months: 1 = 12 months, 0.5 = 6 months,
-	// 2.5 = 30 months. A window that starts on calendar day S ends on the
-	// day before S plus that many months (S = 2015-01-02, one year: ends
-	// 2016-01-01), so a monthly plan makes exactly 12 contributions in a
-	// one-year window.
+	// 2.5 = 30 months. Windows cover whole calendar months: one that
+	// starts on the first of a month S covers [S, S + that many months),
+	// so a one-year window runs from 2015-01-01 through 2015-12-31 and a
+	// monthly plan makes exactly 12 contributions in it, one on the first
+	// trading day of each month. A weekly plan makes 52 or 53.
 	DurationYears float64
 	// StepMonths is how many months later each successive window starts:
 	// 1 starts a new window every month, 12 every year. 0 means 1.
@@ -94,15 +95,18 @@ type RollingResult struct {
 // RunRolling runs p over every window of cfg.DurationYears that fits into
 // the common history of its symbols and summarises the outcomes.
 //
-// p.Start and p.End are ignored: the first window starts on the first day
-// every allocated and calendar symbol (and, for KRW, the exchange rate)
-// has data for, each next window starts cfg.StepMonths later, and a
-// window is run only when its last calendar day is on or before the last
-// such day. Every window is a full Run with the plan's amount, cadence,
-// currency, fees, dividend model and calendar symbols, so each window's
-// first day contributes and Result.Notes conventions apply. Windows run
-// concurrently on runtime.NumCPU() workers; the result does not depend
-// on scheduling. Fewer than three windows is an error wrapping
+// p.Start and p.End are ignored. Windows start on the first of a month:
+// the first window in the first full calendar month of the common history
+// of every allocated and calendar symbol (and, for KRW, the exchange
+// rate), each next window cfg.StepMonths later, and a window is run only
+// when its last calendar day is on or before the last day of that common
+// history. A history that begins on the first trading day of its month
+// starts the first window in that month (see opensPeriod). Every window
+// is a full Run with the plan's amount, cadence, currency, fees, dividend
+// model and calendar symbols, so each window's first trading day
+// contributes and RollingWindow equals a Run over the window's dates.
+// Windows run concurrently on runtime.NumCPU() workers; the result does
+// not depend on scheduling. Fewer than three windows is an error wrapping
 // ErrInsufficientHistory.
 func RunRolling(p Plan, in Input, cfg RollingConfig) (*RollingResult, error) {
 	months, step, err := cfg.resolve()
@@ -116,7 +120,7 @@ func RunRolling(p Plan, in Input, cfg RollingConfig) (*RollingResult, error) {
 		return nil, err
 	}
 	first, last := pr.cal.days[0], pr.cal.days[len(pr.cal.days)-1]
-	ranges := windowRanges(first, last, months, step)
+	ranges := windowRanges(firstWindowStart(first), last, months, step)
 	if len(ranges) < minRollingWindows {
 		return nil, fmt.Errorf("%w: %d window(s) of %d months fit between %s and %s, need at least %d",
 			ErrInsufficientHistory, len(ranges), months, formatDate(first), formatDate(last), minRollingWindows)
@@ -126,10 +130,10 @@ func RunRolling(p Plan, in Input, cfg RollingConfig) (*RollingResult, error) {
 		return nil, err
 	}
 	res := summarise(windows)
-	res.Notes = append(placementNotes(ranges, months, step, last), res.Notes...)
-	for _, n := range pr.notes {
-		res.Notes = append(res.Notes, "every window: "+n)
-	}
+	res.Notes = append(placementNotes(pr.plan.Cadence, ranges, months, step, first, last), res.Notes...)
+	// The probe's other notes describe its own first day; only the notes
+	// about the data itself hold for every window.
+	res.Notes = append(res.Notes, pr.cal.notes...)
 	return res, nil
 }
 
@@ -160,33 +164,31 @@ type dateRange struct {
 	start, end time.Time
 }
 
-// windowRanges lists the windows of months months that start on first or
-// a multiple of step months after it and end on or before last. Both ends
-// are measured from first, so a start clamped by addMonths (the 31st in a
-// short month) does not shift the end.
-func windowRanges(first, last time.Time, months, step int) []dateRange {
+// firstWindowStart returns the first of the first full calendar month of
+// a history that begins on first: first's own month when first opens it
+// (allowing for an opening holiday, see opensPeriod), the next month
+// otherwise.
+func firstWindowStart(first time.Time) time.Time {
+	monthStart := time.Date(first.Year(), first.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if opensPeriod(Monthly, first) {
+		return monthStart
+	}
+	return monthStart.AddDate(0, 1, 0)
+}
+
+// windowRanges lists the windows of months months that start on
+// firstStart, the first of a month, or a multiple of step months after it
+// and end on or before last. Each covers [start, start + months months).
+func windowRanges(firstStart, last time.Time, months, step int) []dateRange {
 	var out []dateRange
 	for i := 0; ; i++ {
-		start := addMonths(first, i*step)
-		end := addMonths(first, i*step+months).AddDate(0, 0, -1)
+		start := firstStart.AddDate(0, i*step, 0)
+		end := start.AddDate(0, months, -1)
 		if end.After(last) {
 			return out
 		}
 		out = append(out, dateRange{start: start, end: end})
 	}
-}
-
-// addMonths returns t moved forward by n calendar months, keeping the day
-// of the month where it exists and clamping to the last day of the target
-// month where it does not: Jan 31 + 1 month is Feb 28 or 29, not Mar 2 or
-// 3 as time.AddDate would give. The result is UTC midnight.
-func addMonths(t time.Time, n int) time.Time {
-	y, m, d := t.Date()
-	target := time.Date(y, m+time.Month(n), 1, 0, 0, 0, 0, time.UTC)
-	if lastDay := target.AddDate(0, 1, -1).Day(); d > lastDay {
-		d = lastDay
-	}
-	return time.Date(target.Year(), target.Month(), d, 0, 0, 0, 0, time.UTC)
 }
 
 // runWindows runs p once per range on a bounded pool of workers and
@@ -281,14 +283,26 @@ func summarise(windows []RollingWindow) *RollingResult {
 	return res
 }
 
-// placementNotes describes how the windows were laid over the history.
-func placementNotes(ranges []dateRange, months, step int, last time.Time) []string {
-	first, final := ranges[0], ranges[len(ranges)-1]
-	return []string{
-		fmt.Sprintf("%d windows of %d months, each starting %d month(s) after the previous one, from %s to %s; the last window ends %s and a window ending after %s (the last day every series has data for) is not run",
-			len(ranges), months, step, formatDate(first.start), formatDate(final.start), formatDate(final.end), formatDate(last)),
+// placementNotes describes how the windows were laid over the history
+// that runs from first to last.
+func placementNotes(c Cadence, ranges []dateRange, months, step int, first, last time.Time) []string {
+	head, final := ranges[0], ranges[len(ranges)-1]
+	placement := fmt.Sprintf("%d windows of %d months, each covering whole calendar months from the first of a month and starting %d month(s) after the previous one, from %s to %s; the last window ends %s and a window ending after %s (the last day every series has data for) is not run",
+		len(ranges), months, step, formatDate(head.start), formatDate(final.start), formatDate(final.end), formatDate(last))
+	if !opensPeriod(Monthly, first) {
+		placement += fmt.Sprintf("; the common history begins mid-month on %s, so the first window starts with the first full month", formatDate(first))
+	}
+	notes := []string{
+		placement,
 		"each window is the plan run on that range alone: its first trading day contributes and later contributions follow the cadence; percentiles are over windows (sorted, linearly interpolated between ranks), ProbLoss is the share of windows whose final value is below the amount invested, and Best/Worst rank by ReturnPct",
 	}
+	switch c {
+	case Monthly:
+		notes = append(notes, fmt.Sprintf("monthly cadence: every window makes %d contributions, on the first trading day of each of its months", months))
+	case Weekly:
+		notes = append(notes, "weekly cadence: a window's first contribution is on its first trading day, often mid-week, and later ones on the first trading day of each following ISO week, so a one-year window makes 52 or 53")
+	}
+	return notes
 }
 
 // percentileLevels are the reported percentiles, the same set analytics

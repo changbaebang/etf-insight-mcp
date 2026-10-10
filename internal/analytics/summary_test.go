@@ -107,7 +107,7 @@ func TestSummarizeGeometricGrowth(t *testing.T) {
 	if sum.High52W != last.Close {
 		t.Fatalf("52w high = %v, want last close %v", sum.High52W, last.Close)
 	}
-	year := s.Between(asOf.AddDate(0, 0, -trailingYearDays), asOf)
+	year := trailingYear(s, asOf)
 	if sum.Low52W != year[0].Close {
 		t.Fatalf("52w low = %v, want first close of trailing year %v", sum.Low52W, year[0].Close)
 	}
@@ -218,5 +218,58 @@ func TestAnnualize(t *testing.T) {
 				t.Fatalf("annualize(%v) = %v, %v; want %v, %v", tt.total, got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+// TestSummarizeTrailingYearIsFiftyTwoWeeks: a fund that pays every 13
+// weeks has two ex-dates exactly 52 weeks apart. On the latest one the
+// trailing year must hold four payments, not five, and the bar exactly 52
+// weeks back must not count towards the 52-week range either.
+func TestSummarizeTrailingYearIsFiftyTwoWeeks(t *testing.T) {
+	s := growthSeries("QTR", 600, 0.0005)
+	last, _ := s.Last()
+	yearAgo := -1
+	for weeks := 0; weeks <= 52; weeks += 13 {
+		date := last.Date.AddDate(0, 0, -7*weeks)
+		idx, ok := s.IndexOn(date)
+		if !ok || !s.Bars[idx].Date.Equal(date) {
+			t.Fatalf("no bar on %s", date.Format(market.DateLayout))
+		}
+		s.Bars[idx].Dividend = 1
+		yearAgo = idx
+	}
+
+	sum, err := Summarize(s, time.Time{})
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if sum.TTMDividendPerShare != 4 {
+		t.Errorf("TTM dividend = %v, want 4: the payment 52 weeks back belongs to the year before", sum.TTMDividendPerShare)
+	}
+	// The series rises every day, so the 52-week low is the first close
+	// inside the window: the bar after the one exactly 52 weeks back.
+	if want := s.Bars[yearAgo+1].Close; sum.Low52W != want {
+		t.Errorf("52-week low = %v, want %v (first bar after %s)", sum.Low52W, want, s.Bars[yearAgo].Date.Format(market.DateLayout))
+	}
+}
+
+// TestSummarizeYearWindowsAnnualizeOverNominalYears: a window of N whole
+// years is annualized over N years, so the 1-year CAGR is its total
+// return and one output never shows two different 1-year rates.
+func TestSummarizeYearWindowsAnnualizeOverNominalYears(t *testing.T) {
+	s := geometricSeries("GROW", day(2018, time.January, 1), day(2024, time.March, 15), 0.10)
+	sum, err := Summarize(s, time.Time{})
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	oneYear := windowByLabel(t, sum, "1y")
+	if !oneYear.AnnualizedAvailable || oneYear.Annualized != oneYear.TotalReturn {
+		t.Errorf("1y annualized = %v (available %v), want the total return %v", oneYear.Annualized, oneYear.AnnualizedAvailable, oneYear.TotalReturn)
+	}
+	for label, years := range map[string]float64{"3y": 3, "5y": 5} {
+		w := windowByLabel(t, sum, label)
+		if want := math.Pow(1+w.TotalReturn, 1/years) - 1; !approx(w.Annualized, want, 1e-12) {
+			t.Errorf("%s annualized = %v, want %v", label, w.Annualized, want)
+		}
 	}
 }

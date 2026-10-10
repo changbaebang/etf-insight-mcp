@@ -41,8 +41,13 @@ func TestSearchSymbols(t *testing.T) {
 		if h := out.Hits[1]; h.Symbol != "SCHW" || h.Type != "EQUITY" || h.InUniverse {
 			t.Errorf("second hit = %+v, want SCHW equity outside the universe", h)
 		}
-		if search, _ := fund.limits(); search != defaultSearchLimit {
-			t.Errorf("upstream limit = %d, want %d", search, defaultSearchLimit)
+		// us_only still filters, so the provider is asked for its maximum.
+		if search, _ := fund.limits(); search != searchFetchLimit {
+			t.Errorf("upstream limit = %d, want %d", search, searchFetchLimit)
+		}
+		callOK(t, sess, "search_symbols", map[string]any{"query": "schwab", "etf_only": false, "us_only": false}, &out)
+		if search, _ := fund.limits(); search != defaultSearchLimit || out.Count != 5 {
+			t.Errorf("unfiltered: upstream limit = %d, count %d; want %d and 5", search, out.Count, defaultSearchLimit)
 		}
 	})
 
@@ -94,5 +99,48 @@ func TestSearchSymbols(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			callErr(t, sess, "search_symbols", tt.args, tt.want)
 		})
+	}
+}
+
+func TestSearchSymbolsListings(t *testing.T) {
+	sess, _, _ := newDataSession(t)
+
+	t.Run("us listings by default", func(t *testing.T) {
+		out := callRaw(t, sess, "search_symbols", map[string]any{"query": "s&p 500"})
+		hits, _ := out["hits"].([]any)
+		if len(hits) != 1 || hits[0].(map[string]any)["symbol"] != "VOO" {
+			t.Errorf("hits = %v, want only the US listing VOO", hits)
+		}
+		notes := rawStrings(out["notes"])
+		if !hasDataNote(notes, "VFV.TO (Toronto)") || !hasDataNote(notes, "VUAA.L (London)") {
+			t.Errorf("notes = %v, want the hidden foreign listings named", notes)
+		}
+	})
+
+	t.Run("foreign listings on request", func(t *testing.T) {
+		out := callRaw(t, sess, "search_symbols", map[string]any{"query": "s&p 500", "us_only": false})
+		hits, _ := out["hits"].([]any)
+		want := map[string]bool{"VOO": true, "VFV.TO": false, "VUAA.L": false}
+		if len(hits) != len(want) {
+			t.Fatalf("hits = %v, want %d", hits, len(want))
+		}
+		for _, h := range hits {
+			row := h.(map[string]any)
+			if us, ok := want[row["symbol"].(string)]; !ok || row["us_listing"] != us {
+				t.Errorf("hit %v, want us_listing %v", row, us)
+			}
+		}
+	})
+
+	t.Run("non-latin query", func(t *testing.T) {
+		callErr(t, sess, "search_symbols", map[string]any{"query": "미국 배당"}, "Latin")
+	})
+}
+
+func TestForeignListing(t *testing.T) {
+	for sym, want := range map[string]bool{"VOO": false, "BRK-B": false, "^GSPC": false, "KRW=X": false, "VFV.TO": true, "VUAA.L": true, "SCHD.MX": true, "X.": false} {
+		if got := foreignListing(sym); got != want {
+			t.Errorf("foreignListing(%q) = %v, want %v", sym, got, want)
+		}
 	}
 }

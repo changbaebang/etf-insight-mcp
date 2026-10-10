@@ -120,3 +120,35 @@ func opsProgressSession(t *testing.T, deps Deps) (*mcp.ClientSession, <-chan *mc
 	t.Cleanup(func() { _ = sess.Close() })
 	return sess, notes
 }
+
+// opsBlockingSource counts the fetches it starts and holds each one until
+// release is closed, then fails it, so nothing reaches the cache files.
+type opsBlockingSource struct {
+	started atomic.Int64
+	running atomic.Int64
+	release chan struct{}
+}
+
+func newOpsBlockingSource(t *testing.T) *opsBlockingSource {
+	t.Helper()
+	src := &opsBlockingSource{release: make(chan struct{})}
+	// The cache runs fetches detached from the caller, so they may outlive
+	// the call under test. Release them and wait, so none is still running
+	// when t.TempDir is removed.
+	t.Cleanup(func() {
+		close(src.release)
+		deadline := time.Now().Add(5 * time.Second)
+		for src.running.Load() > 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	})
+	return src
+}
+
+func (b *opsBlockingSource) Series(context.Context, string) (*market.Series, error) {
+	b.started.Add(1)
+	b.running.Add(1)
+	defer b.running.Add(-1)
+	<-b.release
+	return nil, errors.New("fake: released")
+}

@@ -397,11 +397,19 @@ func TestClearAll(t *testing.T) {
 		filepath.Join(s.dir, fundSubdir, "SPY.unknown.json"),
 	}
 	temps := []string{
-		filepath.Join(s.dir, "SPY.999.tmp"),
+		filepath.Join(s.dir, "SPY.json.999.tmp"),
 		filepath.Join(s.dir, fundSubdir, "SPY.profile.json.999.tmp"),
 	}
 	for _, p := range append(strays, temps...) {
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Temporary files count as leftovers only once they are older than
+	// tempFileMaxAge on the Store's clock.
+	for _, p := range temps {
+		past := s.now().Add(-time.Hour)
+		if err := os.Chtimes(p, past, past); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -490,5 +498,186 @@ func BenchmarkStatus(b *testing.B) {
 		if st.Files != MaxFiles || st.Symbols[0].Bars != len(bars) {
 			b.Fatalf("Files = %d, Bars = %d", st.Files, st.Symbols[0].Bars)
 		}
+	}
+}
+
+// TestClearAllLeavesOtherProgramsFiles: in a cache directory shared with
+// other programs, ClearAll removes only files with this package's names
+// and header, and temporary files only once a write in progress can no
+// longer own them.
+func TestClearAllLeavesOtherProgramsFiles(t *testing.T) {
+	s, _ := newStore(t, time.Hour)
+	populate(t, s)
+	old, young := s.now().Add(-time.Hour), s.now()
+	keep := map[string]time.Time{
+		filepath.Join(s.dir, "2024-01-01.json"):            {}, // a valid symbol name, not a cache file
+		filepath.Join(s.dir, "1.json"):                     {},
+		filepath.Join(s.dir, "editor-swap.tmp"):            old,
+		filepath.Join(s.dir, "QQQ.json.123.tmp"):           young, // a write in progress
+		filepath.Join(s.dir, fundSubdir, "notes.json.tmp"): old,
+	}
+	for p, at := range keep {
+		writeTestFile(t, p, `{"user":"data"}`)
+		if !at.IsZero() {
+			setModTime(t, p, at)
+		}
+	}
+	stale := filepath.Join(s.dir, "SPY.json.456.tmp")
+	writeTestFile(t, stale, "x")
+	setModTime(t, stale, old)
+
+	n, err := s.ClearAll()
+	if err != nil {
+		t.Fatalf("ClearAll: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("removed %d files, want 5 (2 price, 2 fund, 1 stale temp)", n)
+	}
+	for p := range keep {
+		if !exists(p) {
+			t.Errorf("%s was removed", filepath.Base(p))
+		}
+	}
+	for _, p := range []string{stale, s.path("SPY"), s.path("QQQ"), fundPath(s.dir, "SPY", kindProfile)} {
+		if exists(p) {
+			t.Errorf("%s still exists", filepath.Base(p))
+		}
+	}
+}
+
+func TestHasCacheHeader(t *testing.T) {
+	s, _ := newStore(t, time.Hour)
+	populate(t, s)
+	v1, err := json.Marshal(entryV1{FetchedAt: t0, Series: cachedHistory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1Path := filepath.Join(t.TempDir(), "V1.json")
+	writeTestFile(t, v1Path, string(v1))
+	for _, p := range []string{s.path("SPY"), fundPath(s.dir, "SPY", kindProfile), v1Path} {
+		if !hasCacheHeader(p) {
+			t.Errorf("hasCacheHeader(%s) = false for a file this package wrote", filepath.Base(p))
+		}
+	}
+	other := filepath.Join(t.TempDir(), "other.json")
+	writeTestFile(t, other, `{"version":3}`)
+	if hasCacheHeader(other) || hasCacheHeader(filepath.Join(t.TempDir(), "missing.json")) {
+		t.Error("hasCacheHeader accepted a foreign or missing file")
+	}
+}
+
+// TestStatusFlagsTruncatedFile: Status stops reading at "series", but a
+// file cut short there is still reported, as readEntry would reject it.
+func TestStatusFlagsTruncatedFile(t *testing.T) {
+	s, _ := newStore(t, time.Hour)
+	if _, err := s.Series(context.Background(), "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(s.path("SPY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, s.path("SPY"), string(data[:len(data)/2]))
+	if _, ok := s.readEntry("SPY"); ok {
+		t.Fatal("readEntry accepted the truncated file")
+	}
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarning(st, "SPY.json: unreadable") || st.Symbols[0].Version != 0 {
+		t.Errorf("Status = %+v, want SPY flagged unreadable", st)
+	}
+}
+
+func TestStatusSortsSymbols(t *testing.T) {
+	s, _ := newStore(t, time.Hour)
+	for _, sym := range []string{"BRK", "BRK-B", "BF", "BF.B"} {
+		e := &entry{Version: formatVersion, FetchedAt: t0, FullFetchedAt: t0, Series: sampleSeries(sym)}
+		if err := s.writeEntry(sym, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ss := range st.Symbols {
+		got = append(got, ss.Symbol)
+	}
+	if want := []string{"BF", "BF.B", "BRK", "BRK-B"}; !slices.Equal(got, want) {
+		t.Errorf("symbols = %v, want %v", got, want)
+	}
+}
+
+// TestStatusErrorWarningsAreConsistent: a fetch that clears a symbol's
+// error while Status runs must not produce "last fetch failed: <nil>".
+func TestStatusErrorWarningsAreConsistent(t *testing.T) {
+	s, _ := newStore(t, time.Hour)
+	stop := make(chan struct{})
+	toggled := make(chan struct{})
+	go func() {
+		defer close(toggled)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				s.lastErr.set("SPY", errUpstream)
+				s.lastErr.set("SPY", nil)
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-toggled
+	}()
+	for range 2000 {
+		st, err := s.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hasWarning(st, "<nil>") {
+			t.Fatalf("warnings = %q", st.Warnings)
+		}
+	}
+}
+
+// TestSymlinkedFundDirIsNotFollowed: Status, Clear and ClearAll never
+// look through a fund directory that is a symlink.
+func TestSymlinkedFundDirIsNotFollowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	s, _ := newStore(t, time.Hour)
+	elsewhere := t.TempDir()
+	draft := filepath.Join(elsewhere, "ABC.profile.json.1.tmp")
+	doc := filepath.Join(elsewhere, "ABC.profile.json")
+	writeTestFile(t, draft, "x")
+	setModTime(t, draft, s.now().Add(-time.Hour))
+	writeTestFile(t, doc, `{"version":1,"fetched_at":"2026-10-08T09:00:00Z","data":{}}`)
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(s.dir, fundSubdir)); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.FundFiles != 0 || !hasWarning(st, "fund: not a real directory") {
+		t.Errorf("Status = %+v, want no fund files and a warning", st)
+	}
+	if removed, err := s.Clear([]string{"ABC"}); err != nil || len(removed) != 0 {
+		t.Errorf("Clear = %v, %v; want nothing removed", removed, err)
+	}
+	if n, err := s.ClearAll(); err != nil || n != 0 {
+		t.Errorf("ClearAll = %d, %v; want nothing removed", n, err)
+	}
+	if !exists(draft) || !exists(doc) {
+		t.Errorf("files behind the symlink were removed: temp %v, doc %v", exists(draft), exists(doc))
 	}
 }

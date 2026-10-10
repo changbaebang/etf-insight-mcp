@@ -132,7 +132,7 @@ func TestRunRollingYearlyWindows(t *testing.T) {
 	}
 	requirePercentileKeys(t, "ReturnPctPercentiles", res.ReturnPctPercentiles)
 	requirePercentileKeys(t, "AnnualizedPercentiles", res.AnnualizedPercentiles)
-	if len(res.Notes) < 2 || !strings.Contains(res.Notes[0], "5 windows of 12 months") {
+	if len(res.Notes) < 2 || !strings.Contains(res.Notes[0], "5 windows of 12 months, each covering whole calendar months") {
 		t.Errorf("Notes = %q, want a placement note first", res.Notes)
 	}
 }
@@ -240,13 +240,13 @@ func TestRunRollingHonoursFeeFixedAndCalendarSymbols(t *testing.T) {
 	in := seriesInput(spy, schd)
 	res := mustRunRolling(t, p, in, RollingConfig{DurationYears: 1, StepMonths: 12})
 
-	// The calendar symbol moves the first common bar to 2020-06-15, so the
-	// windows start on June 15 of 2020, 2021 and 2022; the 2023 window
-	// would end 2024-06-14.
+	// The calendar symbol moves the first common bar to mid-month
+	// 2020-06-15, so the first window starts with the first full month,
+	// July 2020; the July 2023 window would end 2024-06-30.
 	want := []struct{ start, end string }{
-		{"2020-06-15", "2021-06-14"},
-		{"2021-06-15", "2022-06-14"},
-		{"2022-06-15", "2023-06-14"},
+		{"2020-07-01", "2021-06-30"},
+		{"2021-07-01", "2022-06-30"},
+		{"2022-07-01", "2023-06-30"},
 	}
 	if res.Count != len(want) {
 		t.Fatalf("Count = %d, want %d", res.Count, len(want))
@@ -255,22 +255,48 @@ func TestRunRollingHonoursFeeFixedAndCalendarSymbols(t *testing.T) {
 		win := res.Windows[i]
 		requireDate(t, "Start", win.Start, w.start)
 		requireDate(t, "End", win.End, w.end)
-		// June 15 is mid-month, then the first trading day of each of the
-		// next twelve months: 13 contributions.
-		if win.Contributions != 13 {
-			t.Errorf("window %d: Contributions = %d, want 13", i, win.Contributions)
+		// One contribution on the first trading day of each of the twelve
+		// months.
+		if win.Contributions != 12 {
+			t.Errorf("window %d: Contributions = %d, want 12", i, win.Contributions)
 		}
 		// On a flat price the fixed fee is the only loss, once per contribution.
 		requireFloat(t, "FinalValue", win.FinalValue, win.Invested-float64(win.Contributions), tight)
 		requireWindowEqualsRun(t, win, p, in)
 	}
 	requireFloat(t, "ProbLoss", res.ProbLoss, 1, tight)
-	found := false
 	for _, n := range res.Notes {
-		found = found || strings.HasPrefix(n, "every window: first contribution on 2020-06-15 falls mid-month")
+		if strings.Contains(n, "2020-06-15") && !strings.Contains(n, "first full month") || strings.Contains(n, "falls mid-month") {
+			t.Errorf("note %q describes the history's first day as if it were every window's", n)
+		}
 	}
-	if !found {
-		t.Errorf("Notes = %q, want the mid-month note passed through", res.Notes)
+}
+
+func TestRunRollingMonthlyWindowMakesOneContributionPerMonth(t *testing.T) {
+	// SCHD-like history that begins mid-month on Thursday 2011-10-20.
+	schd := weekdaySeries(t, "SCHD", "2011-10-20", "2016-12-30", func(time.Time) float64 { return 50 })
+	in := seriesInput(schd)
+	for _, tc := range []struct {
+		months int
+		want   int
+	}{{12, 12}, {3, 3}, {36, 36}} {
+		res := mustRunRolling(t, singlePlan("SCHD", Monthly, 100), in,
+			RollingConfig{DurationYears: float64(tc.months) / 12, StepMonths: 1})
+		for _, w := range res.Windows {
+			if w.Contributions != tc.want {
+				t.Fatalf("%d-month window from %s: Contributions = %d, want %d",
+					tc.months, formatDate(w.Start), w.Contributions, tc.want)
+			}
+		}
+	}
+
+	// Weekly windows start on the first of a month, usually mid-week, and
+	// the notes say so without naming a single window's date.
+	res := mustRunRolling(t, singlePlan("SCHD", Weekly, 100), in, RollingConfig{DurationYears: 1, StepMonths: 12})
+	for _, n := range res.Notes {
+		if strings.HasPrefix(n, "every window: ") {
+			t.Errorf("note %q applies one window's placement to all of them", n)
+		}
 	}
 }
 
@@ -303,42 +329,38 @@ func TestRunRollingErrors(t *testing.T) {
 	}
 }
 
-func TestAddMonths(t *testing.T) {
-	tests := []struct {
-		from string
-		n    int
-		want string
-	}{
-		{"2024-01-31", 1, "2024-02-29"},
-		{"2023-01-31", 1, "2023-02-28"},
-		{"2024-01-31", 2, "2024-03-31"},
-		{"2024-03-31", 11, "2025-02-28"},
-		{"2024-11-15", 3, "2025-02-15"},
-		{"2024-05-10", 0, "2024-05-10"},
-		{"2024-01-15", 24, "2026-01-15"},
+func TestFirstWindowStart(t *testing.T) {
+	tests := []struct{ first, want string }{
+		{"2018-01-01", "2018-01-01"}, // the first weekday of January
+		{"2024-01-02", "2024-01-01"}, // after New Year's Day
+		{"2024-09-03", "2024-09-01"}, // after Labor Day
+		{"2011-10-20", "2011-11-01"}, // mid-month: the next full month
+		{"2024-12-31", "2025-01-01"},
 	}
 	for _, tc := range tests {
-		t.Run(tc.from, func(t *testing.T) {
-			requireDate(t, "addMonths", addMonths(date(t, tc.from), tc.n), tc.want)
+		t.Run(tc.first, func(t *testing.T) {
+			requireDate(t, "firstWindowStart", firstWindowStart(date(t, tc.first)), tc.want)
 		})
 	}
 }
 
-func TestWindowRangesMeasureFromFirst(t *testing.T) {
-	// Starting on the 31st: the second window starts on the clamped Feb 28
-	// but still ends on the day before Feb 28 of the next year, not on the
-	// day before Feb 28 + 12 months measured from the clamped start.
-	ranges := windowRanges(date(t, "2018-01-31"), date(t, "2019-12-31"), 12, 1)
-	if len(ranges) != 12 {
-		t.Fatalf("len(ranges) = %d, want 12 (the Dec 2018 start ends 2019-12-30, the Jan 2019 start 2020-01-30)", len(ranges))
+func TestWindowRangesCoverWholeMonths(t *testing.T) {
+	ranges := windowRanges(date(t, "2018-01-01"), date(t, "2019-12-31"), 12, 1)
+	if len(ranges) != 13 {
+		t.Fatalf("len(ranges) = %d, want 13 (Jan 2018 through Jan 2019 starts)", len(ranges))
 	}
-	requireDate(t, "ranges[0].end", ranges[0].end, "2019-01-30")
-	requireDate(t, "ranges[1].start", ranges[1].start, "2018-02-28")
-	requireDate(t, "ranges[1].end", ranges[1].end, "2019-02-27")
-	requireDate(t, "ranges[10].start", ranges[10].start, "2018-11-30")
-	requireDate(t, "ranges[10].end", ranges[10].end, "2019-11-29")
-	requireDate(t, "ranges[11].start", ranges[11].start, "2018-12-31")
-	requireDate(t, "ranges[11].end", ranges[11].end, "2019-12-30")
+	requireDate(t, "ranges[0].end", ranges[0].end, "2018-12-31")
+	requireDate(t, "ranges[1].start", ranges[1].start, "2018-02-01")
+	requireDate(t, "ranges[1].end", ranges[1].end, "2019-01-31")
+	requireDate(t, "ranges[12].start", ranges[12].start, "2019-01-01")
+	requireDate(t, "ranges[12].end", ranges[12].end, "2019-12-31")
+
+	short := windowRanges(date(t, "2024-01-01"), date(t, "2024-12-31"), 3, 3)
+	if len(short) != 4 {
+		t.Fatalf("len(short) = %d, want 4 quarters", len(short))
+	}
+	requireDate(t, "short[0].end", short[0].end, "2024-03-31")
+	requireDate(t, "short[3].start", short[3].start, "2024-10-01")
 }
 
 func TestPercentile(t *testing.T) {

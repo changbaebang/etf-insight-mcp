@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,6 +33,12 @@ const defaultCacheTTL = 6 * time.Hour
 // defaultFullRefreshDays is how many days a cached history is extended
 // with recent bars only before the whole history is fetched again.
 const defaultFullRefreshDays = 30
+
+// maxFullRefreshDays caps -full-refresh-days at a hundred years. The cap
+// keeps fullRefreshInterval well inside time.Duration, which overflows
+// past about 106,751 days and would silently turn a huge value into a
+// short or negative interval.
+const maxFullRefreshDays = 36500
 
 // errReported marks a command-line error the flag package already
 // printed together with the usage.
@@ -61,7 +68,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	fs.SetOutput(stderr)
 	fs.StringVar(&c.cacheDir, "cache-dir", "", "directory for cached price history and fund data (default: $"+cache.EnvCacheDir+" or the user cache directory, e.g. ~/Library/Caches/etf-insight-mcp)")
 	fs.DurationVar(&c.cacheTTL, "cache-ttl", defaultCacheTTL, "how long a cached symbol is reused before it is brought up to date")
-	fs.IntVar(&c.fullRefreshDays, "full-refresh-days", defaultFullRefreshDays, "days a cached history is extended with recent bars only before the whole history is fetched again")
+	fs.IntVar(&c.fullRefreshDays, "full-refresh-days", defaultFullRefreshDays, "days a cached history is extended with recent bars only before the whole history is fetched again (1 to "+fmt.Sprint(maxFullRefreshDays)+")")
 	fs.BoolVar(&c.clearCache, "clear-cache", false, "delete every file this server wrote in the cache directory, report what was removed on stderr and exit")
 	fs.BoolVar(&c.showVersion, "version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -77,6 +84,8 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 		return config{}, fmt.Errorf("-cache-ttl must be positive, got %s", c.cacheTTL)
 	case c.fullRefreshDays < 1:
 		return config{}, fmt.Errorf("-full-refresh-days must be at least 1, got %d", c.fullRefreshDays)
+	case c.fullRefreshDays > maxFullRefreshDays:
+		return config{}, fmt.Errorf("-full-refresh-days must be at most %d, got %d", maxFullRefreshDays, c.fullRefreshDays)
 	}
 	return c, nil
 }
@@ -162,29 +171,63 @@ func run(c config, dir string) error {
 
 // clearCache removes every file the server wrote in dir (price files,
 // fund files and leftover temporary files; anything else stays) and
-// reports what went to w.
+// reports what went to w. The report compares the cache before and after,
+// so when some files cannot be removed it counts only what went and lists
+// what is still there.
 func clearCache(c config, dir string, w io.Writer) error {
 	store, _ := newStores(c, dir)
-	st, err := store.Status(context.Background())
+	ctx := context.Background()
+	before, err := store.Status(ctx)
 	if err != nil {
 		return err
 	}
-	n, err := store.ClearAll()
-	_, _ = fmt.Fprintf(w, "etf-insight-mcp: removed %d %s (%d bytes) from %s\n", n, plural(n, "file", "files"), st.TotalBytes, dir)
-	if len(st.Symbols) > 0 {
-		syms := make([]string, 0, len(st.Symbols))
-		for _, ss := range st.Symbols {
-			syms = append(syms, ss.Symbol)
+	n, clearErr := store.ClearAll()
+	after, statusErr := store.Status(ctx)
+	if statusErr != nil {
+		// Without a second look we know only how many files went.
+		_, _ = fmt.Fprintf(w, "etf-insight-mcp: removed %d %s from %s\n", n, plural(n, "file", "files"), dir)
+		return errors.Join(partwayError(dir, clearErr), statusErr)
+	}
+
+	_, _ = fmt.Fprintf(w, "etf-insight-mcp: removed %d %s (%d bytes) from %s\n", n, plural(n, "file", "files"), before.TotalBytes-after.TotalBytes, dir)
+	kept := cachedSymbols(after)
+	var removed []string
+	for _, sym := range cachedSymbols(before) {
+		if !slices.Contains(kept, sym) {
+			removed = append(removed, sym)
 		}
-		_, _ = fmt.Fprintf(w, "  price history: %s\n", strings.Join(syms, ", "))
 	}
-	if st.FundFiles > 0 {
-		_, _ = fmt.Fprintf(w, "  fund documents: %d %s\n", st.FundFiles, plural(st.FundFiles, "file", "files"))
+	printFileGroups(w, "  ", removed, before.FundFiles-after.FundFiles)
+	printFileGroups(w, "  still there: ", kept, after.FundFiles)
+	return partwayError(dir, clearErr)
+}
+
+// cachedSymbols lists the symbols that have a price file in st.
+func cachedSymbols(st *cache.Status) []string {
+	syms := make([]string, 0, len(st.Symbols))
+	for _, ss := range st.Symbols {
+		syms = append(syms, ss.Symbol)
 	}
-	if err != nil {
-		return fmt.Errorf("clearing %s failed partway: %w", dir, err)
+	return syms
+}
+
+// printFileGroups writes one line for the price-history symbols and one
+// for the fund document count, each with prefix, skipping empty groups.
+func printFileGroups(w io.Writer, prefix string, symbols []string, fundFiles int) {
+	if len(symbols) > 0 {
+		_, _ = fmt.Fprintf(w, "%sprice history: %s\n", prefix, strings.Join(symbols, ", "))
 	}
-	return nil
+	if fundFiles > 0 {
+		_, _ = fmt.Fprintf(w, "%sfund documents: %d %s\n", prefix, fundFiles, plural(fundFiles, "file", "files"))
+	}
+}
+
+// partwayError wraps a ClearAll error with the directory, or returns nil.
+func partwayError(dir string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("clearing %s failed partway: %w", dir, err)
 }
 
 // plural picks the singular or plural noun for n.

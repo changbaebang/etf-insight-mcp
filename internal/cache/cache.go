@@ -8,12 +8,15 @@
 // the last cached bar and appends them; mergeTail documents when that is
 // unsafe and the whole history is fetched again instead. Concurrent misses
 // for the same symbol share a single upstream call that outlives any one
-// caller's context, and when the source fails but a file exists the stale
-// series is served while the failure is kept for Store.LastError. A series
-// that could not be written to disk is still served and the problem kept
-// for Store.LastWriteError. Status reports what is on disk and warns when
-// the cache grows past its thresholds; Clear and ClearAll remove files.
-// Nothing is logged.
+// caller's context (a caller whose context is already done starts none),
+// and when the source fails but a file exists the stale series is served
+// while the failure is kept for Store.LastError. A series that could not
+// be written to disk is still served and the problem kept for
+// Store.LastWriteError. Store.Refresh always downloads the whole history,
+// and Store.RefreshReport says whether that download replaced the file.
+// Status reports what is on disk and warns when the cache grows past its
+// thresholds; Clear and ClearAll remove files, ClearAll only those whose
+// name and header show this package wrote them. Nothing is logged.
 package cache
 
 import (
@@ -59,19 +62,32 @@ const fetchTimeout = 90 * time.Second
 var symbolPattern = regexp.MustCompile(`^[A-Z0-9.=^-]+$`)
 
 // call is one in-flight upstream fetch that concurrent callers wait on.
+// full records whether it downloads the whole history, so that a Refresh
+// can tell it apart from a top-up. out is set before done is closed.
 type call struct {
-	done   chan struct{}
-	series *market.Series
-	err    error
+	done chan struct{}
+	full bool
+	out  outcome
+}
+
+// outcome is what one upstream fetch produced. Every caller that waited
+// on the fetch gets the same outcome, so it describes this fetch rather
+// than whatever the per-symbol LastError and LastWriteError tables hold
+// by the time a caller reads them.
+type outcome struct {
+	series   *market.Series // what is served; nil only when err is set
+	err      error          // set when there is nothing to serve
+	fetchErr error          // the upstream failure when series is the stale file
+	writeErr error          // why series could not be written to disk
 }
 
 // wait blocks until the fetch finishes or ctx is done.
-func (c *call) wait(ctx context.Context) (*market.Series, error) {
+func (c *call) wait(ctx context.Context) (outcome, error) {
 	select {
 	case <-c.done:
-		return c.series, c.err
+		return c.out, c.out.err
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return outcome{}, ctx.Err()
 	}
 }
 
@@ -90,6 +106,11 @@ type Store struct {
 
 	mu       sync.Mutex
 	inflight map[string]*call
+	// unwritten holds, per symbol, the newest entry that was fetched but
+	// could not be written to disk. Reads prefer it over an older file, so
+	// a failed write never brings back data from before the download; it
+	// is dropped as soon as a write succeeds or the symbol is cleared.
+	unwritten map[string]*entry
 
 	lastErr      errTable // most recent upstream failure per symbol
 	lastWriteErr errTable // most recent cache write failure per symbol
@@ -148,6 +169,7 @@ func New(next market.Source, dir string, ttl time.Duration, opts ...Option) *Sto
 		limits:       defaultLimits,
 		now:          time.Now,
 		inflight:     make(map[string]*call),
+		unwritten:    make(map[string]*entry),
 	}
 	if rs, ok := next.(market.RangeSource); ok {
 		s.ranged = rs
@@ -171,10 +193,51 @@ func (s *Store) Series(ctx context.Context, symbol string) (*market.Series, erro
 	if err != nil {
 		return nil, err
 	}
-	if e, ok := s.readEntry(sym); ok && s.isFresh(e) {
+	if e, ok := s.current(sym); ok && s.isFresh(e) {
 		return e.Series, nil
 	}
-	return s.fetch(ctx, sym, false)
+	out, err := s.fetch(ctx, sym, false)
+	return out.series, err
+}
+
+// current returns the newest entry known for sym: one held in memory
+// because its write failed, when it is newer than the file, otherwise the
+// file's.
+func (s *Store) current(sym string) (*entry, bool) {
+	file, ok := s.readEntry(sym)
+	s.mu.Lock()
+	mem := s.unwritten[sym]
+	s.mu.Unlock()
+	if mem != nil && (!ok || mem.FetchedAt.After(file.FetchedAt)) {
+		return mem, true
+	}
+	return file, ok
+}
+
+// rememberWrite keeps e in memory when writing it failed, so later reads
+// still see it, and forgets it once a write succeeds.
+func (s *Store) rememberWrite(sym string, e *entry, writeErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if writeErr != nil {
+		s.unwritten[sym] = e
+		return
+	}
+	delete(s.unwritten, sym)
+}
+
+// forgetUnwritten drops the in-memory entries of syms, or of every symbol
+// when syms is empty.
+func (s *Store) forgetUnwritten(syms ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(syms) == 0 {
+		clear(s.unwritten)
+		return
+	}
+	for _, sym := range syms {
+		delete(s.unwritten, sym)
+	}
 }
 
 // isFresh reports whether e is in the current format and was brought up
@@ -184,67 +247,54 @@ func (s *Store) isFresh(e *entry) bool {
 	return e.Version == formatVersion && isFresh(s.now(), e.FetchedAt, s.ttl)
 }
 
-// Prefetch fetches every symbol through this Store with at most
-// concurrency fetches in flight (below 1 is treated as 1) and returns the
-// series that succeeded together with the error of each symbol that
-// failed. Symbols already fresh on disk are served from the file. Once
-// ctx is done no new fetch starts and the remaining symbols are reported
-// with ctx.Err(). Callers should use the returned series directly rather
-// than calling Series again: a series that could not be written to disk
-// would otherwise be fetched a second time.
-func (s *Store) Prefetch(ctx context.Context, symbols []string, concurrency int) (map[string]*market.Series, map[string]error) {
-	concurrency = max(concurrency, 1)
-	var (
-		wg     sync.WaitGroup
-		sem    = make(chan struct{}, concurrency)
-		mu     sync.Mutex
-		series = make(map[string]*market.Series, len(symbols))
-		errs   = make(map[string]error)
-	)
-	for _, sym := range symbols {
-		if err := ctx.Err(); err != nil {
-			mu.Lock()
-			errs[sym] = err
-			mu.Unlock()
-			continue
-		}
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			mu.Lock()
-			errs[sym] = ctx.Err()
-			mu.Unlock()
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			got, err := s.Series(ctx, sym)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				errs[sym] = err
-				return
-			}
-			series[sym] = got
-		}()
-	}
-	wg.Wait()
-	return series, errs
-}
-
 // Refresh fetches the whole history of symbol from the wrapped source
 // regardless of the TTL and rewrites its cache file. It shares the
-// stale-on-error behavior with Series, and a Refresh that arrives while a
-// fetch of the symbol is already in flight shares that fetch, whether it
-// is a top-up or a full one.
+// stale-on-error behavior with Series: when the download fails and a file
+// exists, the old series is returned with a nil error. A Refresh that
+// arrives while a full fetch of the symbol is in flight shares it; one
+// that arrives during a top-up waits for the top-up to finish and then
+// downloads the whole history, so a Refresh always means a full download.
+// Use RefreshReport to learn whether the download succeeded.
 func (s *Store) Refresh(ctx context.Context, symbol string) (*market.Series, error) {
+	r, err := s.RefreshReport(ctx, symbol)
+	return r.Series, err
+}
+
+// Refreshed is what one RefreshReport call did.
+type Refreshed struct {
+	// Series is the history served: the new download, or the previous
+	// cached file when the download failed.
+	Series *market.Series
+	// FetchErr is why the download failed when Series is the previous
+	// cached file; nil when the whole history was downloaded.
+	FetchErr error
+	// WriteErr is why the download could not replace the cached file; nil
+	// when it did. Series is current either way.
+	WriteErr error
+}
+
+// Replaced reports whether the whole history was downloaded and written
+// over the cached file.
+func (r Refreshed) Replaced() bool {
+	return r.FetchErr == nil && r.WriteErr == nil
+}
+
+// RefreshReport is Refresh that also reports what happened to this call's
+// download. Unlike LastError and LastWriteError, which another call's
+// fetch of the same symbol can overwrite at any time, the report belongs
+// to the fetch this call waited on. The error is non-nil only when there
+// is no series to serve at all: an invalid symbol, ctx done, or a failed
+// download with no cached file.
+func (s *Store) RefreshReport(ctx context.Context, symbol string) (Refreshed, error) {
 	sym, err := normalizeSymbol(symbol)
 	if err != nil {
-		return nil, err
+		return Refreshed{}, err
 	}
-	return s.fetch(ctx, sym, true)
+	out, err := s.fetch(ctx, sym, true)
+	if err != nil {
+		return Refreshed{}, err
+	}
+	return Refreshed{Series: out.series, FetchErr: out.fetchErr, WriteErr: out.writeErr}, nil
 }
 
 // LastError returns the error of the most recent upstream fetch of symbol
@@ -266,54 +316,81 @@ func (s *Store) LastWriteError(symbol string) error {
 
 // fetch runs one upstream fetch per symbol at a time. Callers that arrive
 // while a fetch is in flight wait for its result instead of starting
-// another, so a burst of cold reads costs a single request. The upstream
-// call runs in its own goroutine under a context detached from every
-// caller (context.WithoutCancel plus fetchTimeout), so a caller that gives
-// up does not fail the others; every caller, the first included, returns
-// as soon as its own ctx is done. full forces a full fetch; otherwise the
-// history is topped up when it can be.
-func (s *Store) fetch(ctx context.Context, sym string, full bool) (*market.Series, error) {
-	s.mu.Lock()
-	if c, ok := s.inflight[sym]; ok {
-		s.mu.Unlock()
-		return c.wait(ctx)
-	}
-	c := &call{done: make(chan struct{})}
-	s.inflight[sym] = c
-	s.mu.Unlock()
-
-	go func() {
-		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
-		defer cancel()
-		c.series, c.err = s.fetchAndStore(fetchCtx, sym, full)
-
+// another, so a burst of cold reads costs a single request. The one
+// exception is a full fetch (full set) arriving during a top-up: it waits
+// for the top-up to finish and then starts, or joins, a full fetch. The
+// upstream call runs in its own goroutine under a context detached from
+// every caller (context.WithoutCancel plus fetchTimeout), so a caller that
+// gives up does not fail the others; every caller, the first included,
+// returns as soon as its own ctx is done. A caller whose ctx is already
+// done starts nothing, since nobody would wait for the download.
+func (s *Store) fetch(ctx context.Context, sym string, full bool) (outcome, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return outcome{}, err
+		}
 		s.mu.Lock()
-		delete(s.inflight, sym)
+		c, ok := s.inflight[sym]
+		if !ok {
+			c = &call{done: make(chan struct{}), full: full}
+			s.inflight[sym] = c
+			s.mu.Unlock()
+			go s.run(ctx, sym, c)
+			return c.wait(ctx)
+		}
 		s.mu.Unlock()
-		close(c.done)
-	}()
-	return c.wait(ctx)
+		if c.full || !full {
+			return c.wait(ctx)
+		}
+		// A top-up is in flight but a full download was asked for.
+		select {
+		case <-c.done:
+		case <-ctx.Done():
+			return outcome{}, ctx.Err()
+		}
+	}
+}
+
+// run performs the fetch of c detached from ctx's cancellation, then
+// releases the in-flight slot and wakes the waiters.
+func (s *Store) run(ctx context.Context, sym string, c *call) {
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+	defer cancel()
+	c.out = s.fetchAndStore(fetchCtx, sym, c.full)
+
+	s.mu.Lock()
+	delete(s.inflight, sym)
+	s.mu.Unlock()
+	close(c.done)
 }
 
 // fetchAndStore brings sym up to date through the wrapped source and
-// persists the result. When the source fails and a file exists, the stale
-// series is returned with a nil error and the failure is recorded for
-// LastError. A series that could not be written is still returned, with
-// the problem recorded for LastWriteError.
-func (s *Store) fetchAndStore(ctx context.Context, sym string, full bool) (*market.Series, error) {
-	old, hasOld := s.readEntry(sym)
+// persists the result. When the file is already fresh and full is not set
+// it is served as is: another fetch may have finished between the
+// caller's own read and taking the in-flight slot. When the source fails
+// and a file exists, the stale series is served and the failure recorded
+// in the outcome and for LastError. A series that could not be written is
+// still served, with the problem recorded in the outcome and for
+// LastWriteError.
+func (s *Store) fetchAndStore(ctx context.Context, sym string, full bool) outcome {
+	old, hasOld := s.current(sym)
+	if hasOld && !full && s.isFresh(old) {
+		return outcome{series: old.Series}
+	}
 	e, err := s.fetchEntry(ctx, sym, old, full)
 	if err != nil {
 		err = fmt.Errorf("cache: fetch %s: %w", sym, err)
 		s.lastErr.set(sym, err)
 		if hasOld {
-			return old.Series, nil
+			return outcome{series: old.Series, fetchErr: err}
 		}
-		return nil, err
+		return outcome{err: err}
 	}
 	s.lastErr.set(sym, nil)
-	s.lastWriteErr.set(sym, s.writeEntry(sym, e))
-	return e.Series, nil
+	writeErr := s.writeEntry(sym, e)
+	s.lastWriteErr.set(sym, writeErr)
+	s.rememberWrite(sym, e, writeErr)
+	return outcome{series: e.Series, writeErr: writeErr}
 }
 
 // fetchEntry tops old up when allowed and falls back to a full fetch when
@@ -346,11 +423,12 @@ func (s *Store) canTopUp(old *entry) bool {
 func (s *Store) topUp(ctx context.Context, sym string, old *entry) (*entry, error) {
 	last, _ := old.Series.Last()
 	now := s.now()
-	tail, err := s.ranged.SeriesRange(ctx, sym, last.Date.Add(-s.overlap), market.Day(now))
+	from := market.Day(last.Date.Add(-s.overlap))
+	tail, err := s.ranged.SeriesRange(ctx, sym, from, market.Day(now))
 	if err != nil {
 		return nil, err
 	}
-	merged, err := mergeTail(old.Series, tail)
+	merged, err := mergeTail(old.Series, tail, from)
 	if err != nil {
 		return nil, err
 	}

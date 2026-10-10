@@ -4,19 +4,23 @@
 //
 // Money conventions, repeated on the fields they apply to:
 //
-//   - A contribution is Plan.Amount in the plan currency. FeeRate of it is
-//     lost to commissions; the net remainder is split by Allocation.Weight
-//     and invested at that day's close.
+//   - A contribution is Plan.Amount in the plan currency, split by
+//     Allocation.Weight into one order per symbol. Each order loses
+//     FeeRate of itself and the fixed commission FeeFixed; the remainder
+//     is invested at that day's close.
 //   - Shares are fractional; nothing is rounded to whole shares.
-//   - Shares are always bought and valued at Bar.Close, so share counts are
-//     real. Plan.Reinvest selects the dividend model: true spends every
-//     dividend on more shares at the ex-dividend date's close, false keeps
-//     cash dividends uninvested.
+//   - Shares are always bought and valued at Bar.Close, which the provider
+//     adjusts for splits but not for dividends; Holding.Shares converts the
+//     count back across splits after the range, so it is the number of
+//     shares actually held at the end. Plan.Reinvest selects the dividend
+//     model: true spends every dividend on more shares at the ex-dividend
+//     date's close, false keeps cash dividends uninvested.
 //   - A KRW plan converts each contribution to USD at that day's exchange
 //     rate and values holdings back into KRW at the valuation day's rate.
 //   - The trading calendar is the set of days on which every allocated
 //     symbol (and every Plan.CalendarSymbols symbol) has a bar, bounded
-//     for KRW plans by the exchange-rate history.
+//     for KRW plans by the exchange-rate history. A dividend dated on a
+//     day missing from it is credited on the next calendar day.
 //
 // Run is the engine. RunRolling slides a fixed-length window over the
 // history and runs the plan in each ("what if I had started in year X?");
@@ -28,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -113,11 +118,14 @@ type Plan struct {
 	// e.g. 0.001 = 0.1%; 0 <= FeeRate < 1. The fee is taken before the
 	// contribution is split between symbols.
 	FeeRate float64
-	// FeeFixed is a constant commission per contribution in the plan
-	// currency, e.g. 0.99 USD, charged on top of FeeRate: net = Amount ×
-	// (1 − FeeRate) − FeeFixed. It must leave a positive net amount. For
-	// small daily purchases it is usually the dominant cost: 0.99 on a 5
-	// USD purchase is 19.8% of every contribution.
+	// FeeFixed is a constant commission per ETF purchased, in the plan
+	// currency, e.g. 0.99 USD, charged on top of FeeRate. Brokers charge
+	// it per order, so a contribution pays it once for every allocation:
+	// the order for a symbol of weight w is Amount × w × (1 − FeeRate) −
+	// FeeFixed after fees, and must stay positive for the smallest
+	// weight. A single-ETF plan pays it once per contribution. For small
+	// daily purchases it is usually the dominant cost: 0.99 on a 5 USD
+	// purchase is 19.8% of every contribution.
 	FeeFixed float64
 	// Reinvest selects the dividend model. Shares are always bought and
 	// valued at Bar.Close. true: on every ex-dividend date shares ×
@@ -239,8 +247,12 @@ func normalise(p Plan) (Plan, error) {
 	if math.IsNaN(p.FeeFixed) || p.FeeFixed < 0 || math.IsInf(p.FeeFixed, 0) {
 		return Plan{}, fmt.Errorf("sim: fixed fee must be >= 0, got %v", p.FeeFixed)
 	}
-	if p.FeeFixed >= p.Amount*(1-p.FeeRate) {
-		return Plan{}, fmt.Errorf("sim: fixed fee %v leaves nothing of a %v contribution to invest", p.FeeFixed, p.Amount)
+	if smallest := smallestAllocation(p.Allocations); p.FeeFixed >= p.Amount*smallest.Weight*(1-p.FeeRate) {
+		if len(p.Allocations) == 1 {
+			return Plan{}, fmt.Errorf("sim: fixed fee %s leaves nothing of a %s contribution to invest", amountText(p.FeeFixed), amountText(p.Amount))
+		}
+		return Plan{}, fmt.Errorf("sim: fixed fee %s per ETF leaves nothing of the %s order for %s (%s%% of a %s contribution) to invest",
+			amountText(p.FeeFixed), amountText(p.Amount*smallest.Weight), smallest.Symbol, amountText(smallest.Weight*100), amountText(p.Amount))
 	}
 
 	p.CalendarSymbols, err = normaliseCalendarSymbols(p.CalendarSymbols, p.Allocations)
@@ -274,6 +286,18 @@ func normaliseCalendarSymbols(syms []string, allocs []Allocation) ([]string, err
 		out = append(out, sym)
 	}
 	return out, nil
+}
+
+// smallestAllocation returns the allocation with the lowest weight, the
+// first one on a tie. allocs must not be empty.
+func smallestAllocation(allocs []Allocation) Allocation {
+	smallest := allocs[0]
+	for _, a := range allocs[1:] {
+		if a.Weight < smallest.Weight {
+			smallest = a
+		}
+	}
+	return smallest
 }
 
 // allocationSymbols lists the symbols of allocs in order.
@@ -344,4 +368,10 @@ func lookupSeries(symbols []string, series map[string]*market.Series) ([]named, 
 // formatDate renders d in the wire date format.
 func formatDate(d time.Time) string {
 	return d.Format(market.DateLayout)
+}
+
+// amountText renders an amount for an error message: rounded to four
+// decimals, without trailing zeros (0.0588 rather than 0.058788947677836566).
+func amountText(x float64) string {
+	return strconv.FormatFloat(math.Round(x*1e4)/1e4, 'f', -1, 64)
 }

@@ -28,15 +28,15 @@ type getPriceHistoryInput struct {
 	Start     string `json:"start,omitempty" jsonschema:"first date YYYY-MM-DD, inclusive (default: the first bar)"`
 	End       string `json:"end,omitempty" jsonschema:"last date YYYY-MM-DD, inclusive (default: the last bar)"`
 	Interval  string `json:"interval,omitempty" jsonschema:"daily, weekly (last bar of each ISO week) or monthly (last bar of each calendar month); default monthly"`
-	MaxPoints int    `json:"max_points,omitempty" jsonschema:"maximum number of points, 1 to 2000 (default 300); when the interval yields more, every k-th point plus the last is kept and downsampled is true"`
+	MaxPoints int    `json:"max_points,omitempty" jsonschema:"maximum number of points, 1 to 2000 (default 300); each point is about 70 bytes of text, so prefer weekly or monthly for long spans. When the interval yields more, every k-th point plus the last is kept and downsampled is true"`
 }
 
 // pricePoint is one bar on the wire.
 type pricePoint struct {
 	Date     string  `json:"date"`
-	Close    float64 `json:"close"`
+	Close    float64 `json:"close" jsonschema:"closing price restated for later splits (in today's share terms), not adjusted for dividends"`
 	AdjClose float64 `json:"adj_close"`
-	Dividend float64 `json:"dividend"`
+	Dividend float64 `json:"dividend" jsonschema:"cash dividends per share paid in the bars this point stands for: the day itself for an unthinned daily point, the whole week or month for weekly and monthly points, and, when downsampled, every bar since the previous point"`
 }
 
 type getPriceHistoryOutput struct {
@@ -54,7 +54,7 @@ type getPriceHistoryOutput struct {
 func registerGetPriceHistory(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_price_history",
-		Description: "Daily, weekly or monthly price points of one symbol (close, dividend-adjusted close and cash dividend per share), for charts or custom calculations. Weekly and monthly keep the last bar of each ISO week or calendar month. At most max_points are returned; when more would be needed, every k-th point plus the last is kept and downsampled is true. Prices are in the symbol's currency (USD for US ETFs, KRW per USD for KRW=X).",
+		Description: "Daily, weekly or monthly price points of one symbol (close, dividend-adjusted close and cash dividends per share; close and dividends are restated for later splits to today's share terms, get_dividends shows the cash actually paid and get_splits lists the splits), for charts or custom calculations. Weekly and monthly points take the close of the last bar of each ISO week or calendar month and the sum of the dividends paid in it. At most max_points are returned (each about 70 bytes of text); when more would be needed, every k-th point plus the last is kept, each kept point also carries the dividends of the points dropped before it, and downsampled is true. The dividend column therefore always sums to what was paid in the range. Prices are in the symbol's currency (USD for US ETFs, KRW per USD for KRW=X).",
 		Title:       "Get price history",
 		Annotations: readOnly("Get price history", true),
 		InputSchema: inputSchema[getPriceHistoryInput](schemaTweaks{
@@ -156,8 +156,9 @@ func parseMaxPoints(n int) (int, error) {
 	}
 }
 
-// bucket keeps the last bar of each period of the interval; daily keeps
-// every bar.
+// bucket keeps the last bar of each period of the interval, carrying the
+// dividends of every bar of the period; daily keeps every bar. The input
+// is not modified.
 func bucket(bars []market.Bar, interval string) []market.Bar {
 	if interval == intervalDaily {
 		return bars
@@ -170,9 +171,13 @@ func bucket(bars []market.Bar, interval string) []market.Bar {
 		return [2]int{t.Year(), int(t.Month())}
 	}
 	out := make([]market.Bar, 0, len(bars))
+	paid := 0.0 // dividends of the period so far
 	for i, b := range bars {
+		paid += b.Dividend
 		if i == len(bars)-1 || period(b.Date) != period(bars[i+1].Date) {
+			b.Dividend = paid // b is a copy, so the caller's bar is untouched
 			out = append(out, b)
+			paid = 0
 		}
 	}
 	return out
@@ -180,22 +185,31 @@ func bucket(bars []market.Bar, interval string) []market.Bar {
 
 // downsample keeps every k-th bar plus the last so that at most limit bars
 // remain, and reports whether anything was dropped. k is the smallest
-// stride that fits: ceil((n-1) / (limit-1)).
+// stride that fits: ceil((n-1) / (limit-1)). A kept bar carries the
+// dividends of the bars dropped since the previous kept one, so none is
+// lost. The input is not modified.
 func downsample(bars []market.Bar, limit int) ([]market.Bar, bool) {
 	n := len(bars)
 	if n <= limit {
 		return bars, false
 	}
 	if limit == 1 {
-		return bars[n-1:], true
+		last := bars[n-1]
+		for _, b := range bars[:n-1] {
+			last.Dividend += b.Dividend
+		}
+		return []market.Bar{last}, true
 	}
 	k := (n + limit - 3) / (limit - 1)
 	out := make([]market.Bar, 0, limit)
-	for i := 0; i < n; i += k {
-		out = append(out, bars[i])
-	}
-	if (n-1)%k != 0 {
-		out = append(out, bars[n-1])
+	paid := 0.0 // dividends since the previous kept bar
+	for i, b := range bars {
+		paid += b.Dividend
+		if i%k == 0 || i == n-1 {
+			b.Dividend = paid
+			out = append(out, b)
+			paid = 0
+		}
 	}
 	return out, true
 }

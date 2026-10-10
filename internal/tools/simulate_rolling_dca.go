@@ -85,7 +85,7 @@ func (d Deps) registerSimulateRollingDCA(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "simulate_rolling_dca",
 		Title:       "Simulate rolling DCA",
-		Description: "Answers \"what if I had started on every month since inception?\": runs the same recurring plan (amount per contribution, cadence, currency, fees, dividends) over every window of duration_years that fits into the symbol's history (a portfolio's common history), one window starting every step_months months from the first day of data, and summarises the outcomes: windows_count, percentiles p5 to p95 of the windows' simple returns (return_pct_percentiles) and money-weighted annualized returns (annualized_percentiles, windows of a year or longer only), prob_loss_pct = share of windows that ended below the amount invested, the best and worst window, and the windows themselves (only the 60 most recent when there are more; the statistics always use all). It is the historical counterpart of forecast_dca: real past paths instead of resampled ones, so it shows how much the start date mattered. Needs history of at least duration_years plus two steps (3 windows). Defaults: currency USD, cadence daily, step_months 1, fee_rate 0, commission_fixed 0, dividends reinvested. Percentages are plain numbers (7.5 = 7.5%). Historical, not a forecast.",
+		Description: "Answers \"what if I had started on every month since inception?\": runs the same recurring plan (amount per contribution, cadence, currency, fees, dividends) over every window of duration_years that fits into the symbol's history (a portfolio's common history), one window starting every step_months months on the first of a month from the first full month of data, and summarises the outcomes. A window starting on day S covers S up to but not including S + duration_years, so a one-year monthly window makes 12 contributions. Every symbol must be quoted in USD. It reports: windows_count, percentiles p5 to p95 of the windows' simple returns (return_pct_percentiles) and money-weighted annualized returns (annualized_percentiles, windows of a year or longer only), prob_loss_pct = share of windows that ended below the amount invested, the best and worst window, and the windows themselves (only the 60 most recent when there are more; the statistics always use all). It is the historical counterpart of forecast_dca: real past paths instead of resampled ones, so it shows how much the start date mattered. Needs history of at least duration_years plus two steps (3 windows). Defaults: currency USD, cadence daily, step_months 1, fee_rate 0, commission_fixed 0, dividends reinvested. Percentages are plain numbers (7.5 = 7.5%). Historical, not a forecast.",
 		Annotations: readOnly("Simulate rolling DCA", true),
 		InputSchema: inputSchema[simulateRollingDCAInput](schemaTweaks{
 			defaults: costDefaults(map[string]any{"currency": "USD", "cadence": "daily", "step_months": 1}),
@@ -115,7 +115,7 @@ func (d Deps) simulateRollingDCA(ctx context.Context, in simulateRollingDCAInput
 	if err := checkAmount(in.Amount); err != nil {
 		return simulateRollingDCAOutput{}, err
 	}
-	if err := in.validate(in.Amount); err != nil {
+	if err := in.validate(in.Amount, allocs); err != nil {
 		return simulateRollingDCAOutput{}, err
 	}
 	months, err := wholeMonths("duration_years", in.DurationYears, minRollingYears, maxRollingYears)
@@ -165,7 +165,7 @@ func (d Deps) simulateRollingDCA(ctx context.Context, in simulateRollingDCAInput
 		rollingStatsOutput: stats,
 		Windows:            make([]rollingWindowOutput, 0, len(shown)),
 		WindowsDownsampled: len(shown) < res.Count,
-		Notes:              append(notes, d.planStaleWarnings(plan)...),
+		Notes:              append(notes, d.planWarnings(plan, simIn)...),
 		Disclaimer:         Disclaimer,
 	}
 	for _, w := range shown {

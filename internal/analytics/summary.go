@@ -7,7 +7,9 @@ import (
 	"github.com/changbaebang/etf-insight-mcp/internal/market"
 )
 
-// trailingYearDays is the span of the "trailing year" windows (52 weeks).
+// trailingYearDays is the span of the "trailing year": 52 weeks. The
+// window holds the bars dated after the anchor minus this many days,
+// through the anchor, see trailingYear.
 const trailingYearDays = 364
 
 // Window is the total return of a series over one trailing period that
@@ -19,8 +21,11 @@ type Window struct {
 	// TotalReturn is AdjClose(AsOf) / AdjClose(From) - 1, i.e. the growth
 	// with dividends reinvested, as a fraction.
 	TotalReturn float64
-	// Annualized is the compound annual growth rate when the window spans
-	// at least 365 calendar days (AnnualizedAvailable true). Shorter
+	// Annualized is the compound annual growth rate of windows of a year
+	// or more (AnnualizedAvailable true). The 1y, 3y, 5y and 10y windows
+	// are annualized over their nominal 1, 3, 5 and 10 years, so the 1y
+	// rate equals TotalReturn; "max" is annualized over its calendar span
+	// at 365.25 days a year once that span reaches 365 days. Shorter
 	// windows are not extrapolated (annualizing a few months is
 	// misleading): Annualized then equals TotalReturn and
 	// AnnualizedAvailable is false, so callers can omit it.
@@ -35,22 +40,23 @@ type Window struct {
 	Available bool
 }
 
-// windowSpec pairs a Window label with the function that derives the
-// window's start date from AsOf. A nil back means "since the first bar".
+// windowSpec pairs a Window label with the window's length in calendar
+// months, counted back from AsOf with monthsBack. Zero months means "since
+// the first bar".
 type windowSpec struct {
-	label string
-	back  func(asOf time.Time) time.Time
+	label  string
+	months int
 }
 
 var windowSpecs = []windowSpec{
-	{label: "1m", back: func(t time.Time) time.Time { return monthsBack(t, 1) }},
-	{label: "3m", back: func(t time.Time) time.Time { return monthsBack(t, 3) }},
-	{label: "6m", back: func(t time.Time) time.Time { return monthsBack(t, 6) }},
-	{label: "1y", back: func(t time.Time) time.Time { return monthsBack(t, 12) }},
-	{label: "3y", back: func(t time.Time) time.Time { return monthsBack(t, 36) }},
-	{label: "5y", back: func(t time.Time) time.Time { return monthsBack(t, 60) }},
-	{label: "10y", back: func(t time.Time) time.Time { return monthsBack(t, 120) }},
-	{label: "max", back: nil},
+	{label: "1m", months: 1},
+	{label: "3m", months: 3},
+	{label: "6m", months: 6},
+	{label: "1y", months: 12},
+	{label: "3y", months: 36},
+	{label: "5y", months: 60},
+	{label: "10y", months: 120},
+	{label: "max"},
 }
 
 // monthsBack returns the date n months before t, clamped to the last day
@@ -70,6 +76,13 @@ func monthsBack(t time.Time, n int) time.Time {
 // Summary is a descriptive snapshot of one series as of a date. All
 // return and drawdown figures are fractions (0.1 = 10%), computed on
 // AdjClose unless stated otherwise.
+//
+// For a series younger than 52 weeks, Volatility1Y, MaxDrawdown1Y, the
+// TTM dividend figures and High52W/Low52W cover only the bars it has,
+// which makes a young fund look calmer, shallower or less generous than a
+// full year would. Summary does not mark this: callers that present them
+// as one-year figures must check the history length themselves
+// (ScoreSeries reports them as NaN instead).
 type Summary struct {
 	// Symbol is the series symbol.
 	Symbol string
@@ -90,18 +103,22 @@ type Summary struct {
 	// shorter; 0 with fewer than two returns).
 	Volatility1Y float64
 	// MaxDrawdown1Y is the largest decline from a prior high within the
-	// trailing year (the 365 calendar days ending on AsOf, inclusive).
+	// trailing 52 weeks: the bars dated after AsOf minus 364 days, through
+	// AsOf.
 	MaxDrawdown1Y float64
 	// MaxDrawdownAll is the largest decline from a prior high over the
 	// whole series up to AsOf.
 	MaxDrawdownAll float64
-	// TTMDividendPerShare is the sum of Bar.Dividend over the trailing
-	// year (the 365 calendar days ending on AsOf, inclusive).
+	// TTMDividendPerShare is the sum of Bar.Dividend over the same
+	// trailing 52 weeks. The day exactly 52 weeks back is left out, so on
+	// an ex-date that falls 52 weeks after the previous year's one a
+	// quarterly payer counts 4 payments and a monthly payer 12, not one
+	// more.
 	TTMDividendPerShare float64
 	// TTMDividendYield is TTMDividendPerShare / Close.
 	TTMDividendYield float64
-	// High52W and Low52W are the highest and lowest Close over the
-	// trailing year (the 365 calendar days ending on AsOf, inclusive).
+	// High52W and Low52W are the highest and lowest Close over the same
+	// trailing 52 weeks.
 	High52W, Low52W float64
 }
 
@@ -119,7 +136,7 @@ func Summarize(s *market.Series, asOf time.Time) (Summary, error) {
 	sub := &market.Series{Meta: s.Meta, Bars: s.Bars[:idx+1]}
 	last := sub.Bars[idx]
 	adj := adjCloses(sub.Bars)
-	year := sub.Between(last.Date.AddDate(0, 0, -trailingYearDays), last.Date)
+	year := trailingYear(sub, last.Date)
 
 	sum := Summary{
 		Symbol:         s.Meta.Symbol,
@@ -141,6 +158,14 @@ func Summarize(s *market.Series, asOf time.Time) (Summary, error) {
 	return sum, nil
 }
 
+// trailingYear returns the bars of s in the 52 weeks ending on end: those
+// dated after end minus 364 days, through end. Starting one day after the
+// date 52 weeks back keeps two events exactly 52 weeks apart, such as the
+// ex-dates of a quarterly payer, from both falling inside one year.
+func trailingYear(s *market.Series, end time.Time) []market.Bar {
+	return s.Between(end.AddDate(0, 0, 1-trailingYearDays), end)
+}
+
 // computeWindows evaluates every windowSpec against sub, whose last bar is
 // last.
 func computeWindows(sub *market.Series, last market.Bar) []Window {
@@ -156,8 +181,8 @@ func computeWindows(sub *market.Series, last market.Bar) []Window {
 func computeWindow(sub *market.Series, spec windowSpec, last market.Bar) Window {
 	w := Window{Label: spec.label}
 	from := sub.Bars[0]
-	if spec.back != nil {
-		idx, ok := sub.IndexOn(spec.back(last.Date))
+	if spec.months > 0 {
+		idx, ok := sub.IndexOn(monthsBack(last.Date, spec.months))
 		if !ok {
 			return w
 		}
@@ -166,8 +191,28 @@ func computeWindow(sub *market.Series, spec windowSpec, last market.Bar) Window 
 	w.Available = true
 	w.From = from.Date
 	w.TotalReturn = last.AdjClose/from.AdjClose - 1
-	w.Annualized, w.AnnualizedAvailable = annualize(w.TotalReturn, from.Date, last.Date)
+	if spec.months > 0 {
+		w.Annualized, w.AnnualizedAvailable = annualizeMonths(w.TotalReturn, spec.months)
+	} else {
+		w.Annualized, w.AnnualizedAvailable = annualize(w.TotalReturn, from.Date, last.Date)
+	}
 	return w
+}
+
+// annualizeMonths converts a total return over a window of whole calendar
+// months into a compound annual growth rate over its nominal length,
+// months/12 years, when the window is at least a year long (ok true). A
+// 12-month window's rate is therefore its total return. Shorter windows
+// return the total return unchanged with ok false.
+func annualizeMonths(total float64, months int) (cagr float64, ok bool) {
+	switch {
+	case months < 12:
+		return total, false
+	case months == 12:
+		return total, true
+	default:
+		return math.Pow(1+total, 12/float64(months)) - 1, true
+	}
 }
 
 // annualize converts a total return over [from, to] into a compound

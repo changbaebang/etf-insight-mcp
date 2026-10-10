@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/changbaebang/etf-insight-mcp/internal/market"
 )
@@ -733,5 +734,153 @@ func TestRunFixedFee(t *testing.T) {
 	p.FeeFixed = -1
 	if _, err := Run(p, seriesInput(spy)); err == nil || !strings.Contains(err.Error(), "fixed fee must be >= 0") {
 		t.Errorf("negative fixed fee: err = %v", err)
+	}
+}
+
+func TestRunFixedFeeIsChargedPerETF(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 5, constant(100))
+	bnd := newSeries(t, "BND", "2024-01-01", 5, constant(50))
+	p := Plan{
+		Allocations: []Allocation{{Symbol: "SPY", Weight: 0.5}, {Symbol: "BND", Weight: 0.5}},
+		Amount:      100,
+		Currency:    CurrencyUSD,
+		Cadence:     Daily,
+		FeeRate:     0.01,
+		FeeFixed:    1,
+	}
+	in := seriesInput(spy, bnd)
+	res := mustRun(t, p, in)
+
+	// Every contribution is two orders of 50 USD; each loses 0.50 to the
+	// rate and 1 to the fixed commission, leaving 48.50 per ETF.
+	requireFloat(t, "Fees", res.Fees, 5*(1+2), tight)
+	requireFloat(t, "Holdings[0].Shares", res.Holdings[0].Shares, 5*48.5/100, tight)
+	requireFloat(t, "Holdings[1].Shares", res.Holdings[1].Shares, 5*48.5/50, tight)
+	requireFloat(t, "FinalValue", res.FinalValue, 5*97, tight)
+
+	// The smallest order must keep something after its own commission:
+	// 10% of 10 USD is 1 USD, all of it eaten by a 1 USD commission.
+	p.Amount, p.FeeRate = 10, 0
+	p.Allocations = []Allocation{{Symbol: "SPY", Weight: 0.9}, {Symbol: "BND", Weight: 0.1}}
+	if _, err := Run(p, in); err == nil || !strings.Contains(err.Error(), "BND") {
+		t.Errorf("fixed fee consuming the BND order: err = %v, want an error naming BND", err)
+	}
+}
+
+func TestRunSharesAreCountedBeforeLaterSplits(t *testing.T) {
+	// Prices are split-adjusted for a 3:1 split after the range, so the
+	// adjusted close of 20 was a quoted 60 on the day.
+	schd := newSeries(t, "SCHD", "2024-01-01", 5, constant(20))
+	schd.Splits = []market.Split{
+		{Date: date(t, "2023-06-01"), Numerator: 2, Denominator: 1}, // before the range: already in the count
+		{Date: date(t, "2024-10-11"), Numerator: 3, Denominator: 1},
+	}
+	res := mustRun(t, singlePlan("SCHD", Daily, 60), seriesInput(schd))
+
+	// 5 × 60 USD bought 15 adjusted shares, i.e. 5 shares at the quoted 60.
+	requireFloat(t, "Holdings[0].Shares", res.Holdings[0].Shares, 5, tight)
+	requireFloat(t, "Holdings[0].Value", res.Holdings[0].Value, 300, tight)
+	found := false
+	for _, n := range res.Notes {
+		found = found || strings.Contains(n, "3:1 split on 2024-10-11")
+	}
+	if !found {
+		t.Errorf("Notes = %q, want a note about the later split", res.Notes)
+	}
+}
+
+// dividendGapSeries returns AAA and BBB with a bar on every weekday of
+// January 2024 at a flat 100, except that BBB has no bar on Wednesday
+// 2024-01-17, the day AAA goes ex-dividend 2.00.
+func dividendGapSeries(t *testing.T) (aaa, bbb *market.Series) {
+	t.Helper()
+	aaa = weekdaySeries(t, "AAA", "2024-01-01", "2024-01-31", func(time.Time) float64 { return 100 })
+	bbb = weekdaySeries(t, "BBB", "2024-01-01", "2024-01-31", func(time.Time) float64 { return 100 })
+	for i, b := range aaa.Bars {
+		if b.Date.Equal(date(t, "2024-01-17")) {
+			aaa.Bars[i].Dividend = 2
+		}
+	}
+	for i, b := range bbb.Bars {
+		if b.Date.Equal(date(t, "2024-01-17")) {
+			bbb.Bars = append(bbb.Bars[:i:i], bbb.Bars[i+1:]...)
+			break
+		}
+	}
+	return aaa, bbb
+}
+
+func TestRunCreditsDividendOfDayMissingFromCalendar(t *testing.T) {
+	aaa, bbb := dividendGapSeries(t)
+	in := seriesInput(aaa, bbb)
+	// Twelve weekdays precede Jan 17, so AAA holds 12 × 0.5 = 6 shares on
+	// the ex-date and is owed 12 USD, credited on Jan 18.
+	const owed = 12.0
+
+	for _, reinvest := range []bool{false, true} {
+		p := Plan{
+			Allocations: []Allocation{{Symbol: "AAA", Weight: 0.5}, {Symbol: "BBB", Weight: 0.5}},
+			Amount:      100,
+			Currency:    CurrencyUSD,
+			Cadence:     Daily,
+			Reinvest:    reinvest,
+		}
+		res := mustRun(t, p, in)
+		requireFloat(t, "FinalValue", res.FinalValue, res.Invested+owed, tight)
+		if !reinvest {
+			requireFloat(t, "CashDividends", res.CashDividends, owed, tight)
+		}
+		found := false
+		for _, n := range res.Notes {
+			found = found || strings.Contains(n, "AAA dividend") && strings.Contains(n, "2024-01-17") && strings.Contains(n, "2024-01-18")
+		}
+		if !found {
+			t.Errorf("reinvest=%v: Notes = %q, want a note on the carried AAA dividend", reinvest, res.Notes)
+		}
+	}
+
+	// A calendar symbol that skips the ex-date must not cost the dividend.
+	p := singlePlan("AAA", Monthly, 100)
+	alone := mustRun(t, p, in)
+	p.CalendarSymbols = []string{"BBB"}
+	shared := mustRun(t, p, in)
+	requireFloat(t, "CashDividends with a calendar symbol", shared.CashDividends, alone.CashDividends, tight)
+	requireFloat(t, "CashDividends", alone.CashDividends, 2, tight)
+}
+
+func TestRunNotesStaleExchangeRate(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 44, constant(100)) // through 2024-02-29
+	// No rate between Jan 5 and Jan 26: the weekdays Jan 15..Jan 25 use a
+	// rate more than a week old.
+	fx := barsSeries(t, "KRW=X",
+		map[string]float64{"2024-01-01": 1000, "2024-01-05": 1000, "2024-01-26": 1100, "2024-02-29": 1100},
+		[]string{"2024-01-01", "2024-01-05", "2024-01-26", "2024-02-29"})
+	p := singlePlan("SPY", Daily, 100_000)
+	p.Currency = CurrencyKRW
+	in := seriesInput(spy)
+	in.FX = fx
+	res := mustRun(t, p, in)
+
+	found := false
+	for _, n := range res.Notes {
+		found = found || strings.Contains(n, "9 trading day(s) from 2024-01-15 to 2024-01-25") && strings.Contains(n, "2024-01-05")
+	}
+	if !found {
+		t.Errorf("Notes = %q, want a note on the stale KRW=X rate", res.Notes)
+	}
+
+	// Gaps of up to a week, such as a long holiday, are normal and not noted.
+	weekly := []string{"2024-01-01", "2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26",
+		"2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23", "2024-02-29"}
+	rates := make(map[string]float64, len(weekly))
+	for _, d := range weekly {
+		rates[d] = 1000
+	}
+	in.FX = barsSeries(t, "KRW=X", rates, weekly)
+	res = mustRun(t, p, in)
+	for _, n := range res.Notes {
+		if strings.Contains(n, "KRW=X") {
+			t.Errorf("unexpected stale-rate note %q", n)
+		}
 	}
 }

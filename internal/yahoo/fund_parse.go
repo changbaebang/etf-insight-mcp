@@ -100,15 +100,17 @@ type qsFundProfile struct {
 }
 
 type qsTopHoldings struct {
-	Holdings         []qsHolding   `json:"holdings"`
-	SectorWeightings []qsNumberMap `json:"sectorWeightings"`
-	BondRatings      []qsNumberMap `json:"bondRatings"`
-	StockPosition    qsNumber      `json:"stockPosition"`
-	BondPosition     qsNumber      `json:"bondPosition"`
-	CashPosition     qsNumber      `json:"cashPosition"`
-	OtherPosition    qsNumber      `json:"otherPosition"`
-	EquityHoldings   qsNumberMap   `json:"equityHoldings"`
-	BondHoldings     qsNumberMap   `json:"bondHoldings"`
+	Holdings            []qsHolding   `json:"holdings"`
+	SectorWeightings    []qsNumberMap `json:"sectorWeightings"`
+	BondRatings         []qsNumberMap `json:"bondRatings"`
+	StockPosition       qsNumber      `json:"stockPosition"`
+	BondPosition        qsNumber      `json:"bondPosition"`
+	CashPosition        qsNumber      `json:"cashPosition"`
+	OtherPosition       qsNumber      `json:"otherPosition"`
+	PreferredPosition   qsNumber      `json:"preferredPosition"`
+	ConvertiblePosition qsNumber      `json:"convertiblePosition"`
+	EquityHoldings      qsNumberMap   `json:"equityHoldings"`
+	BondHoldings        qsNumberMap   `json:"bondHoldings"`
 }
 
 type qsHolding struct {
@@ -196,27 +198,37 @@ type fundSummary struct {
 func (s *fundSummary) fundProfile(symbol string) *market.FundProfile {
 	r := s.result
 	p := &market.FundProfile{
-		Symbol:       symbol,
-		Name:         firstNonEmpty(r.Price.LongName, r.Price.ShortName),
-		Family:       firstNonEmpty(r.FundProfile.Family, r.DefaultKeyStatistics.FundFamily),
-		Category:     firstNonEmpty(r.FundProfile.CategoryName, r.DefaultKeyStatistics.Category),
-		LegalType:    firstNonEmpty(r.FundProfile.LegalType, r.DefaultKeyStatistics.LegalType),
-		ExpenseRatio: r.FundProfile.Fees.ExpenseRatio.ptr(),
-		Turnover:     r.FundProfile.Fees.Turnover.ptr(),
-		NetAssets:    firstNumber(r.DefaultKeyStatistics.TotalAssets, r.SummaryDetail.TotalAssets).ptr(),
-		Yield:        firstNumber(r.DefaultKeyStatistics.Yield, r.SummaryDetail.Yield).ptr(),
-		FetchedAt:    s.fetchedAt,
-	}
-	if raw := r.DefaultKeyStatistics.InceptionDate.Raw; raw != nil && *raw != 0 {
-		p.InceptionDate = market.Day(time.Unix(int64(*raw), 0).UTC())
+		Symbol:        symbol,
+		Name:          firstNonEmpty(r.Price.LongName, r.Price.ShortName),
+		Family:        firstNonEmpty(r.FundProfile.Family, r.DefaultKeyStatistics.FundFamily),
+		Category:      firstNonEmpty(r.FundProfile.CategoryName, r.DefaultKeyStatistics.Category),
+		LegalType:     firstNonEmpty(r.FundProfile.LegalType, r.DefaultKeyStatistics.LegalType),
+		ExpenseRatio:  r.FundProfile.Fees.ExpenseRatio.ptr(),
+		Turnover:      r.FundProfile.Fees.Turnover.ptr(),
+		NetAssets:     firstNumber(r.DefaultKeyStatistics.TotalAssets, r.SummaryDetail.TotalAssets).ptr(),
+		Yield:         firstNumber(r.DefaultKeyStatistics.Yield, r.SummaryDetail.Yield).ptr(),
+		InceptionDate: s.inceptionDate(),
+		FetchedAt:     s.fetchedAt,
 	}
 	return p
 }
 
-// holdings maps the topHoldings module onto market.Holdings. A block whose
-// every value is zero is dropped: that is how Yahoo pads the block that
-// does not apply to a fund (bond ratings on an equity ETF, equity
-// statistics on a bond ETF).
+// inceptionDate returns the fund's inception date, or the zero time when
+// Yahoo does not report one.
+func (s *fundSummary) inceptionDate() time.Time {
+	raw := s.result.DefaultKeyStatistics.InceptionDate.Raw
+	if raw == nil || *raw == 0 {
+		return time.Time{}
+	}
+	return market.Day(time.Unix(int64(*raw), 0).UTC())
+}
+
+// holdings maps the topHoldings module onto market.Holdings. A weight
+// block whose every value is zero is dropped: that is how Yahoo pads the
+// block that does not apply to a fund (bond ratings on an equity ETF).
+// Preferred and convertible positions, which the contract has no field
+// for, count as other, so the four mix figures still add up to the whole
+// portfolio.
 func (s *fundSummary) holdings(symbol string) *market.Holdings {
 	th := s.result.TopHoldings
 	h := &market.Holdings{
@@ -226,7 +238,7 @@ func (s *fundSummary) holdings(symbol string) *market.Holdings {
 		StockPct:    th.StockPosition.ptr(),
 		BondPct:     th.BondPosition.ptr(),
 		CashPct:     th.CashPosition.ptr(),
-		OtherPct:    th.OtherPosition.ptr(),
+		OtherPct:    sumReported(th.OtherPosition, th.PreferredPosition, th.ConvertiblePosition),
 		EquityStats: stats(th.EquityHoldings),
 		BondStats:   stats(th.BondHoldings),
 		FetchedAt:   s.fetchedAt,
@@ -259,16 +271,36 @@ func weights(list []qsNumberMap) []market.Weight {
 	return out
 }
 
-// stats copies the reported statistics, or returns nil when none is
-// non-zero.
+// sumReported adds the numbers that were reported, or returns nil when none
+// was.
+func sumReported(numbers ...qsNumber) *float64 {
+	var sum float64
+	found := false
+	for _, n := range numbers {
+		if n.Raw != nil {
+			sum += *n.Raw
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return &sum
+}
+
+// stats copies the reported statistics, leaving out exact zeros: Yahoo
+// sends 0.0 for a figure it does not have, such as every equity ratio of a
+// bond fund or the price-to-earnings figure of TQQQ and ARKK. The equity
+// ratios are reciprocals (earnings over price), so a zero would also turn
+// into an infinite multiple. It returns nil when nothing is left.
 func stats(m qsNumberMap) map[string]float64 {
 	out := make(map[string]float64, len(m))
-	nonZero := false
 	for k, v := range m {
-		out[k] = v
-		nonZero = nonZero || v != 0
+		if v != 0 {
+			out[k] = v
+		}
 	}
-	if !nonZero {
+	if len(out) == 0 {
 		return nil
 	}
 	return out
@@ -286,39 +318,102 @@ func sortedKeys(m qsNumberMap) []string {
 }
 
 // trailingPeriods maps quoteSummary's trailing-return keys onto the
-// contract's period names, in display order.
-var trailingPeriods = []struct{ key, period string }{
-	{"ytd", "ytd"}, {"oneMonth", "1m"}, {"threeMonth", "3m"}, {"oneYear", "1y"},
-	{"threeYear", "3y"}, {"fiveYear", "5y"}, {"tenYear", "10y"},
+// contract's period names, in display order, with the length of each
+// period in months (0 for year to date).
+var trailingPeriods = []struct {
+	key, period string
+	months      int
+}{
+	{"ytd", "ytd", 0}, {"oneMonth", "1m", 1}, {"threeMonth", "3m", 3}, {"oneYear", "1y", 12},
+	{"threeYear", "3y", 36}, {"fiveYear", "5y", 60}, {"tenYear", "10y", 120},
 }
+
+// trailingAsOfKey is the entry of the trailing-return block that dates it.
+const trailingAsOfKey = "asOfDate"
 
 // performance maps the fundPerformance module onto market.Performance.
 // Trailing returns keep the contract's period order, calendar years are
 // ascending and risk statistics are ordered by period length.
+//
+// Yahoo pads a figure it does not have with an exact 0.0 instead of
+// leaving it out: every trailing return of a fund it has no returns for
+// (DFAC), the periods a young fund has not existed for (JEPQ's 5y and
+// 10y), single periods (SCHF's 3m), the whole category block of a fund
+// without a category average (TQQQ), and the risk row of a period it does
+// not cover. A return reported to seven significant digits is never
+// exactly zero, so such a trailing return is treated as not reported
+// (nil), and so is a risk row whose statistics are all zero. A fund
+// return or risk row for a period longer than the fund has existed is
+// dropped too, zero or not. Trailing rows left with neither a fund nor a
+// category figure are omitted.
 func (s *fundSummary) performance(symbol string) *market.Performance {
 	fp := s.result.FundPerformance
-	p := &market.Performance{Symbol: symbol, FetchedAt: s.fetchedAt}
+	p := &market.Performance{Symbol: symbol, AsOf: trailingAsOf(fp.TrailingReturns), FetchedAt: s.fetchedAt}
+	life := lifespan{inception: s.inceptionDate(), end: p.AsOf}
+	if life.end.IsZero() {
+		life.end = market.Day(s.fetchedAt)
+	}
 	for _, tp := range trailingPeriods {
-		fund, fundOK := fp.TrailingReturns[tp.key]
-		cat, catOK := fp.TrailingReturnsCat[tp.key]
-		if !fundOK && !catOK {
+		fund := reported(fp.TrailingReturns, tp.key)
+		if !life.covers(tp.months) {
+			fund = nil
+		}
+		cat := reported(fp.TrailingReturnsCat, tp.key)
+		if fund == nil && cat == nil {
 			continue
 		}
-		p.Trailing = append(p.Trailing, market.PeriodReturn{
-			Period: tp.period, Fund: optional(fund, fundOK), Category: optional(cat, catOK),
-		})
+		p.Trailing = append(p.Trailing, market.PeriodReturn{Period: tp.period, Fund: fund, Category: cat})
 	}
 	p.Annual = annualReturns(fp.AnnualTotalReturns.Returns, fp.AnnualTotalReturns.ReturnsCat)
-	p.Risk = riskStats(fp.RiskOverview.RiskStatistics)
+	p.Risk = riskStats(fp.RiskOverview.RiskStatistics, life)
 	return p
 }
 
-// optional returns a pointer to v when ok, else nil.
-func optional(v float64, ok bool) *float64 {
-	if !ok {
+// trailingAsOf dates the trailing returns, or returns the zero time when
+// their block carries no date. The block's asOfDate is the latest trading
+// day, but the returns are monthly figures measured to the end of the
+// month before it (asOfDate 2026-10-08, returns to 2026-09-30, as checked
+// against the price history), so that month-end is returned. Yahoo does
+// not say when it rolls the figures forward, so early in a month they may
+// be a month older still.
+func trailingAsOf(block qsNumberMap) time.Time {
+	raw, ok := block[trailingAsOfKey]
+	if !ok || raw <= 0 {
+		return time.Time{}
+	}
+	day := market.Day(time.Unix(int64(raw), 0).UTC())
+	return day.AddDate(0, 0, -day.Day()) // the last day of the previous month
+}
+
+// reported returns the value of key in block, or nil when the key is
+// missing or holds an exact zero, Yahoo's padding for a figure it does not
+// have.
+func reported(block qsNumberMap, key string) *float64 {
+	v, ok := block[key]
+	if !ok || v == 0 {
 		return nil
 	}
 	return &v
+}
+
+// lifespan is how long a fund had existed when its figures were measured:
+// from its inception to end. A zero time means the date is unknown.
+type lifespan struct {
+	inception, end time.Time
+}
+
+// covers reports whether the fund existed for the whole period of the
+// given number of months ending at end, 0 months meaning year to date. It
+// reports true when either date is unknown.
+func (l lifespan) covers(months int) bool {
+	if l.inception.IsZero() || l.end.IsZero() {
+		return true
+	}
+	start := time.Date(l.end.Year(), time.January, 1, 0, 0, 0, 0, time.UTC)
+	if months > 0 {
+		start = l.end.AddDate(0, -months, 0)
+	}
+	return !l.inception.After(start)
 }
 
 // annualReturns joins the fund's and the category's calendar-year returns
@@ -354,12 +449,18 @@ func annualReturns(fund, cat []qsAnnualReturn) []market.AnnualReturn {
 }
 
 // riskStats converts the risk statistics, ordered by period length (3y,
-// 5y, 10y). Entries without a period are dropped.
-func riskStats(list []qsRiskStats) []market.RiskStats {
+// 5y, 10y). Rows without a period are dropped, and so are rows that are
+// padding (see qsRiskStats.padding) and rows for a period longer than the
+// fund has existed. A single zero among real statistics is kept: they come
+// with two decimals, so a T-bill fund's beta of 0.00 is a real figure.
+func riskStats(list []qsRiskStats, life lifespan) []market.RiskStats {
 	var out []market.RiskStats
 	for _, r := range list {
 		period := strings.TrimSpace(r.Year)
-		if period == "" {
+		if period == "" || r.padding() {
+			continue
+		}
+		if years := periodYears(period); years != math.MaxInt && !life.covers(12*years) {
 			continue
 		}
 		out = append(out, market.RiskStats{
@@ -375,6 +476,18 @@ func riskStats(list []qsRiskStats) []market.RiskStats {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return periodYears(out[i].Period) < periodYears(out[j].Period) })
 	return out
+}
+
+// padding reports whether every statistic of r is missing or exactly zero,
+// which is how Yahoo fills the row of a period it has no statistics for;
+// no fund that traded through the period has seven zero statistics.
+func (r qsRiskStats) padding() bool {
+	for _, n := range []qsNumber{r.Alpha, r.Beta, r.MeanAnnualReturn, r.RSquared, r.StdDev, r.Sharpe, r.Treynor} {
+		if n.value() != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // periodYears parses the leading integer of a period such as "3y";
@@ -397,31 +510,36 @@ type quoteResponse struct {
 }
 
 type v7Quote struct {
-	Symbol                      string  `json:"symbol"`
-	LongName                    string  `json:"longName"`
-	ShortName                   string  `json:"shortName"`
-	Currency                    string  `json:"currency"`
-	Exchange                    string  `json:"exchange"`
-	FullExchangeName            string  `json:"fullExchangeName"`
-	MarketState                 string  `json:"marketState"`
-	RegularMarketPrice          float64 `json:"regularMarketPrice"`
-	RegularMarketChange         float64 `json:"regularMarketChange"`
-	RegularMarketChangePercent  float64 `json:"regularMarketChangePercent"`
-	RegularMarketPreviousClose  float64 `json:"regularMarketPreviousClose"`
-	RegularMarketOpen           float64 `json:"regularMarketOpen"`
-	RegularMarketDayLow         float64 `json:"regularMarketDayLow"`
-	RegularMarketDayHigh        float64 `json:"regularMarketDayHigh"`
-	RegularMarketVolume         float64 `json:"regularMarketVolume"`
-	RegularMarketTime           int64   `json:"regularMarketTime"`
-	FiftyTwoWeekLow             float64 `json:"fiftyTwoWeekLow"`
-	FiftyTwoWeekHigh            float64 `json:"fiftyTwoWeekHigh"`
-	FiftyDayAverage             float64 `json:"fiftyDayAverage"`
-	TwoHundredDayAverage        float64 `json:"twoHundredDayAverage"`
-	TrailingAnnualDividendYield float64 `json:"trailingAnnualDividendYield"`
+	Symbol                     string  `json:"symbol"`
+	LongName                   string  `json:"longName"`
+	ShortName                  string  `json:"shortName"`
+	Currency                   string  `json:"currency"`
+	Exchange                   string  `json:"exchange"`
+	FullExchangeName           string  `json:"fullExchangeName"`
+	MarketState                string  `json:"marketState"`
+	RegularMarketPrice         float64 `json:"regularMarketPrice"`
+	RegularMarketChange        float64 `json:"regularMarketChange"`
+	RegularMarketChangePercent float64 `json:"regularMarketChangePercent"`
+	RegularMarketPreviousClose float64 `json:"regularMarketPreviousClose"`
+	RegularMarketOpen          float64 `json:"regularMarketOpen"`
+	RegularMarketDayLow        float64 `json:"regularMarketDayLow"`
+	RegularMarketDayHigh       float64 `json:"regularMarketDayHigh"`
+	RegularMarketVolume        float64 `json:"regularMarketVolume"`
+	RegularMarketTime          int64   `json:"regularMarketTime"`
+	FiftyTwoWeekLow            float64 `json:"fiftyTwoWeekLow"`
+	FiftyTwoWeekHigh           float64 `json:"fiftyTwoWeekHigh"`
+	FiftyDayAverage            float64 `json:"fiftyDayAverage"`
+	TwoHundredDayAverage       float64 `json:"twoHundredDayAverage"`
+	// DividendYield is in percent (3.24 means 3.24%). The record also has
+	// trailingAnnualDividendYield, which is not read: for many ETFs it is
+	// 0 (SCHD, JEPI) or years out of date (VOO's rate is its 2021 total).
+	DividendYield float64 `json:"dividendYield"`
 }
 
 // parseQuotes decodes a v7 quote body into market.Quotes in Yahoo's order.
-// Symbols Yahoo does not know are simply absent.
+// Symbols Yahoo does not know are simply absent, and so are the stubs it
+// returns for some symbols it cannot quote, such as BRK.B (Yahoo's ticker
+// is BRK-B): a record without a price is not a quote.
 func parseQuotes(body []byte) ([]market.Quote, error) {
 	var resp quoteResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -433,7 +551,7 @@ func parseQuotes(body []byte) ([]market.Quote, error) {
 	out := make([]market.Quote, 0, len(resp.QuoteResponse.Result))
 	for i := range resp.QuoteResponse.Result {
 		q := &resp.QuoteResponse.Result[i]
-		if q.Symbol == "" {
+		if q.Symbol == "" || q.RegularMarketPrice == 0 {
 			continue
 		}
 		out = append(out, q.quote())
@@ -461,7 +579,7 @@ func (q *v7Quote) quote() market.Quote {
 		FiftyTwoWeekHigh:     q.FiftyTwoWeekHigh,
 		FiftyDayAverage:      q.FiftyDayAverage,
 		TwoHundredDayAverage: q.TwoHundredDayAverage,
-		DividendYield:        q.TrailingAnnualDividendYield,
+		DividendYield:        q.DividendYield / 100, // percent to fraction
 	}
 	if q.RegularMarketTime != 0 {
 		mq.AsOf = time.Unix(q.RegularMarketTime, 0).UTC()

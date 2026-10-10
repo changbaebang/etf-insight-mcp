@@ -7,7 +7,7 @@ import (
 )
 
 type simulatePortfolioDCAInput struct {
-	Allocations []allocationInput `json:"allocations" jsonschema:"the portfolio as a list of {symbol, weight}; weights are fractions summing to 1 or percentages summing to 100 and are normalised, e.g. [{VOO, 60}, {SCHD, 40}]"`
+	Allocations []allocationInput `json:"allocations" jsonschema:"the portfolio as a list of {symbol, weight}; weights are fractions summing to 1 or percentages summing to 100 (within 1%) and are normalised, e.g. [{VOO, 60}, {SCHD, 40}]"`
 	planInput
 }
 
@@ -25,7 +25,7 @@ func registerSimulatePortfolioDCA(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "simulate_portfolio_dca",
 		Title:       "Simulate portfolio DCA",
-		Description: "Like simulate_dca for SEVERAL ETFs (for one ETF use simulate_dca): each contribution is split across the allocations by weight (fractions summing to 1 or percentages summing to 100; they are normalised, so 60/40 and 0.6/0.4 mean the same). Purchases happen only on days every symbol traded, the history is cut to the symbols' common range (see notes), and there is no rebalancing. Reports the same figures as simulate_dca plus a holding per symbol, and a comparison block with compare_with (default SPY) on exactly the same days. Historical, not a forecast.",
+		Description: "Like simulate_dca for SEVERAL ETFs (for one ETF use simulate_dca): each contribution is split across the allocations by weight (fractions summing to 1 or percentages summing to 100, within 1%; they are normalised, so 60/40 and 0.6/0.4 mean the same). commission_fixed is charged once per ETF bought, so a contribution split over three ETFs pays it three times. Purchases happen only on days every symbol traded, the history is cut to the symbols' common range (see notes), and there is no rebalancing. Every symbol must be quoted in USD. Reports the same figures as simulate_dca plus a holding per symbol, and a comparison block with compare_with (default SPY) on exactly the same days. Historical, not a forecast.",
 		Annotations: readOnly("Simulate portfolio DCA", true),
 		InputSchema: inputSchema[simulatePortfolioDCAInput](planTweaks(map[string]int{"allocations": 1})),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in simulatePortfolioDCAInput) (*mcp.CallToolResult, simulatePortfolioDCAOutput, error) {

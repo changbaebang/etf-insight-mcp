@@ -38,9 +38,13 @@ func TestSimulateLumpSumVsDCA(t *testing.T) {
 			t.Errorf("diff = %+v, want the lump sum ahead", out.Diff)
 		}
 		// Every dollar grows at the same constant rate on RISE, so the
-		// money-weighted rates of the two legs coincide.
-		if a := out.Diff.AnnualizedReturnPct; a == nil || *a > 0.01 || *a < -0.01 {
-			t.Errorf("diff.annualized_return_pct = %s, want about 0 on a constant-growth series", derefPct(a))
+		// money-weighted rates of the two legs coincide although the lump
+		// sum ends with more: why diff carries no annualized difference.
+		if l, d := out.LumpSum.AnnualizedReturnPct, out.DCA.AnnualizedReturnPct; l == nil || d == nil || *l-*d > 0.01 || *l-*d < -0.01 {
+			t.Errorf("annualized_return_pct = %s (lump) and %s (dca), want about equal on a constant-growth series", derefPct(l), derefPct(d))
+		}
+		if !hasNote(out.Notes, "money-weighted (XIRR)") || !hasNote(out.Notes, "max_drawdown_pct is measured on the unitised value path") {
+			t.Errorf("notes = %v, want the annualized and drawdown caveats", out.Notes)
 		}
 		if out.Diff.FinalValue != round2(out.LumpSum.FinalValue-out.DCA.FinalValue) {
 			t.Errorf("diff.final_value %v does not reconcile with %v - %v", out.Diff.FinalValue, out.LumpSum.FinalValue, out.DCA.FinalValue)
@@ -48,7 +52,7 @@ func TestSimulateLumpSumVsDCA(t *testing.T) {
 		if len(out.Allocations) != 1 || out.Allocations[0].Symbol != "RISE" || out.Currency != "USD" || out.Cadence != "monthly" || out.TotalAmount != 12000 {
 			t.Errorf("echo = %+v %s %s %v", out.Allocations, out.Currency, out.Cadence, out.TotalAmount)
 		}
-		if !hasNote(out.Notes, "DCA leg: 36 monthly contributions of 333.33 USD") || !hasNote(out.Notes, "diff is lump_sum minus dca") {
+		if !hasNote(out.Notes, "DCA leg: 36 monthly contributions of 333.33 USD") || !hasNote(out.Notes, "diff is lump_sum minus dca in final_value and return_pct: positive means") {
 			t.Errorf("notes = %v", out.Notes)
 		}
 		if out.Disclaimer != Disclaimer {
@@ -70,11 +74,11 @@ func TestSimulateLumpSumVsDCA(t *testing.T) {
 		}
 	})
 
-	t.Run("short range omits the annualized difference", func(t *testing.T) {
+	t.Run("short range has no annualized rates to caution about", func(t *testing.T) {
 		var out simulateLumpSumVsDCAOutput
 		callOK(t, sess, "simulate_lump_sum_vs_dca", map[string]any{"symbol": "VOO", "total_amount": 5000, "cadence": "weekly", "start": "2023-01-02", "end": "2023-06-30"}, &out)
-		if out.Diff.AnnualizedReturnPct != nil || !hasNote(out.Notes, "diff.annualized_return_pct omitted") {
-			t.Errorf("diff = %+v, notes = %v", out.Diff, out.Notes)
+		if out.LumpSum.AnnualizedReturnPct != nil || out.DCA.AnnualizedReturnPct != nil || hasNote(out.Notes, "money-weighted (XIRR)") {
+			t.Errorf("annualized = %s/%s, notes = %v", derefPct(out.LumpSum.AnnualizedReturnPct), derefPct(out.DCA.AnnualizedReturnPct), out.Notes)
 		}
 		for _, n := range out.Notes {
 			if hasNote([]string{n}, "Diff.AnnualizedReturn") {

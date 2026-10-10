@@ -1,12 +1,17 @@
 package yahoo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/changbaebang/etf-insight-mcp/internal/market"
 )
@@ -200,6 +205,222 @@ func TestAuthenticatedNotFoundIsNotASessionProblem(t *testing.T) {
 	if got := len(f.requests(summaryPath)); got != 1 {
 		t.Errorf("quoteSummary requests = %d, want 1 (no refresh on 404)", got)
 	}
+}
+
+// slowCookieServer serves quotes behind a cookie endpoint that holds every
+// bootstrap until release is closed. It reports the first cookie request
+// on arrived and counts them all in hits.
+func slowCookieServer(t *testing.T) (c *Client, arrived <-chan struct{}, release chan<- struct{}, hits *atomic.Int32) {
+	t.Helper()
+	quotes := readFixture(t, "quote_v7.json")
+	arrivedCh := make(chan struct{}, 1)
+	releaseCh := make(chan struct{})
+	hits = new(atomic.Int32)
+	c = newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			if hits.Add(1) == 1 {
+				arrivedCh <- struct{}{}
+			}
+			<-releaseCh
+			http.SetCookie(w, &http.Cookie{Name: "A3", Value: "x", Path: "/"})
+			respond(w, http.StatusNotFound, nil)
+		case "/v1/test/getcrumb":
+			respond(w, http.StatusOK, []byte("crumb"))
+		default:
+			respond(w, http.StatusOK, quotes)
+		}
+	}, WithRetries(1, 0))
+	return c, arrivedCh, releaseCh, hits
+}
+
+// waitFor returns the value sent on ch, failing the test after 5 s.
+func waitFor[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero
+	}
+}
+
+func TestSessionBootstrapHonoursCallerContext(t *testing.T) {
+	c, arrived, release, hits := slowCookieServer(t)
+
+	first := make(chan error, 1)
+	go func() { _, err := c.Quote(context.Background(), []string{"SPY"}); first <- err }()
+	waitFor(t, arrived, "the first bootstrap")
+
+	// A second caller with a short deadline must not wait for the first
+	// caller's bootstrap to finish.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	second := make(chan error, 1)
+	go func() { _, err := c.Quote(ctx, []string{"QQQ"}); second <- err }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("second caller: %v, want its own deadline", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("a caller with a 50 ms deadline was still waiting after 3 s for another caller's bootstrap")
+	}
+
+	close(release)
+	if err := waitFor(t, first, "the first caller"); err != nil {
+		t.Errorf("first caller: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("cookie requests = %d, want 1", got)
+	}
+}
+
+// roundTripFunc lets a function stand in for the network.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSessionBootstrapIsSharedByWaiters(t *testing.T) {
+	quotes := readFixture(t, "quote_v7.json")
+	for _, cookieStatus := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(cookieStatus), func(t *testing.T) {
+			// synctest.Wait below returns once every goroutine is blocked on
+			// a channel, so all callers have joined the bootstrap in flight
+			// before it is released. That needs an in-memory transport: a
+			// real connection does not count as blocked. Neither does a
+			// mutex, so code that made callers queue on one would hang here
+			// until the test binary times out;
+			// TestSessionBootstrapHonoursCallerContext reports that case
+			// within seconds.
+			synctest.Test(t, func(t *testing.T) {
+				release := make(chan struct{})
+				var hits atomic.Int32
+				transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					status, header, body := http.StatusOK, http.Header{}, quotes
+					switch r.URL.Path {
+					case "/":
+						hits.Add(1)
+						<-release
+						status, body = cookieStatus, []byte("cookie service down")
+						if cookieStatus == http.StatusOK {
+							status = http.StatusNotFound // as Yahoo answers, with the cookie
+							header.Set("Set-Cookie", "A3=x; Path=/")
+						}
+					case "/v1/test/getcrumb":
+						body = []byte("crumb")
+					}
+					return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
+				})
+				c := New(WithBaseURL("https://yahoo.test"), WithCookieURL("https://yahoo.test/"),
+					WithHTTPClient(&http.Client{Transport: transport}), WithRetries(1, 0))
+
+				const n = 4
+				errs := make(chan error, n)
+				for range n {
+					go func() { _, err := c.Quote(context.Background(), []string{"SPY"}); errs <- err }()
+				}
+				synctest.Wait()
+				close(release)
+
+				for range n {
+					err := <-errs
+					var se *statusError
+					switch {
+					case cookieStatus == http.StatusOK && err != nil:
+						t.Errorf("caller: %v", err)
+					case cookieStatus != http.StatusOK && (!errors.As(err, &se) || se.status != cookieStatus):
+						t.Errorf("caller: %v, want the shared bootstrap's HTTP %d", err, cookieStatus)
+					}
+				}
+				if got := hits.Load(); got != 1 {
+					t.Errorf("cookie requests = %d, want 1 shared by %d callers", got, n)
+				}
+			})
+		})
+	}
+}
+
+func TestCallGroup(t *testing.T) {
+	// synctest runs the goroutines on a fake clock and lets the test wait
+	// until every one of them is blocked, so the order below is exact.
+	synctest.Test(t, func(t *testing.T) {
+		var g callGroup[int]
+		release := make(chan struct{})
+		var runs atomic.Int32
+		slow := func(ctx context.Context) (int, error) {
+			runs.Add(1)
+			select {
+			case <-release:
+				return 42, nil
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+
+		// The first caller starts the call, three more and a hurried one
+		// join it.
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		first := make(chan error, 1)
+		go func() { _, err := g.do(firstCtx, "k", slow); first <- err }()
+		synctest.Wait()
+		results := make(chan int, 3)
+		for range 3 {
+			go func() {
+				v, err := g.do(context.Background(), "k", slow)
+				if err != nil {
+					t.Errorf("waiter: %v", err)
+				}
+				results <- v
+			}()
+		}
+		hurriedCtx, cancelHurried := context.WithTimeout(context.Background(), time.Second)
+		defer cancelHurried()
+		hurried := make(chan error, 1)
+		go func() { _, err := g.do(hurriedCtx, "k", slow); hurried <- err }()
+		synctest.Wait()
+
+		// The first caller giving up ends only its own wait.
+		cancelFirst()
+		if err := <-first; !errors.Is(err, context.Canceled) {
+			t.Errorf("first caller: %v, want context.Canceled", err)
+		}
+		// The hurried caller leaves at its deadline while the call runs on.
+		time.Sleep(time.Second)
+		if err := <-hurried; !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("hurried caller: %v, want context.DeadlineExceeded", err)
+		}
+
+		close(release)
+		for range 3 {
+			if v := <-results; v != 42 {
+				t.Errorf("waiter got %d, want the shared 42", v)
+			}
+		}
+		if got := runs.Load(); got != 1 {
+			t.Errorf("runs = %d, want 1", got)
+		}
+
+		// A finished call is forgotten: the next caller starts a new one.
+		v, err := g.do(context.Background(), "k", func(context.Context) (int, error) { return 7, nil })
+		if v != 7 || err != nil {
+			t.Errorf("after the call: %d, %v; want a fresh call's 7", v, err)
+		}
+
+		// A caller whose context is already done starts nothing.
+		dead, cancelDead := context.WithCancel(context.Background())
+		cancelDead()
+		_, err = g.do(dead, "k", func(context.Context) (int, error) {
+			t.Error("a call was started for a caller whose context was done")
+			return 0, nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("dead caller: %v, want context.Canceled", err)
+		}
+		synctest.Wait()
+	})
 }
 
 func TestSessionInvalidateKeepsNewerCrumb(t *testing.T) {

@@ -34,8 +34,9 @@ const (
 // Symbols are trimmed, upper-cased and de-duplicated; blank ones are
 // dropped, and no symbols means no request and a nil result. Symbols Yahoo
 // does not know are absent from the result rather than an error, so the
-// caller detects them by comparing with its request. Quotes come back in
-// Yahoo's order.
+// caller detects them by comparing with its request; so are symbols Yahoo
+// answers with a price-less stub, such as BRK.B (Yahoo's ticker is
+// BRK-B). Quotes come back in Yahoo's order.
 func (c *Client) Quote(ctx context.Context, symbols []string) ([]market.Quote, error) {
 	wanted := normalizeSymbols(symbols)
 	if len(wanted) == 0 {
@@ -60,7 +61,8 @@ func (c *Client) Quote(ctx context.Context, symbols []string) ([]market.Quote, e
 // market.FundSource. The symbol is trimmed and upper-cased; an unknown one
 // returns an error wrapping market.ErrNotFound. FundProfile, Holdings and
 // Performance share one quoteSummary response per symbol for the duration
-// of WithSummaryTTL.
+// of WithSummaryTTL, and concurrent calls for a symbol that is not cached
+// share one request.
 func (c *Client) FundProfile(ctx context.Context, symbol string) (*market.FundProfile, error) {
 	s, symbol, err := c.summary(ctx, symbol)
 	if err != nil {
@@ -136,9 +138,23 @@ func (c *Client) summary(ctx context.Context, symbol string) (*fundSummary, stri
 
 // fetchQuoteSummary returns the quoteSummary modules for symbol, serving a
 // response fetched within summaryTTL from memory so that the three fund
-// methods for one symbol cost a single request. Errors are not memoized,
-// and two misses for the same symbol at the same instant both fetch.
+// methods for one symbol cost a single request. Misses for a symbol that
+// is already being fetched wait for that request instead of sending their
+// own; each caller still returns as soon as its ctx is done. Errors are
+// not memoized.
 func (c *Client) fetchQuoteSummary(ctx context.Context, symbol string) (*fundSummary, error) {
+	if s, ok := c.memo.get(symbol, c.now()); ok {
+		return s, nil
+	}
+	return c.summaries.do(ctx, symbol, func(ctx context.Context) (*fundSummary, error) {
+		return c.loadQuoteSummary(ctx, symbol)
+	})
+}
+
+// loadQuoteSummary requests the quoteSummary of symbol and memoizes it. It
+// is the shared call behind fetchQuoteSummary, so it first serves a
+// response memoized by a request that finished after its caller looked.
+func (c *Client) loadQuoteSummary(ctx context.Context, symbol string) (*fundSummary, error) {
 	now := c.now()
 	if s, ok := c.memo.get(symbol, now); ok {
 		return s, nil

@@ -76,3 +76,41 @@ func TestRecoverPanics(t *testing.T) {
 		t.Errorf("non-panicking handler: res=%v err=%v", res, err)
 	}
 }
+
+// TestNullPropertiesMeanNotGiven sends JSON null for optional inputs, as
+// some clients do for every unset field. The SDK's schema check rejects
+// null for a non-pointer property, so the middleware drops such keys.
+func TestNullPropertiesMeanNotGiven(t *testing.T) {
+	sess := newSession(t, testDeps(newFakeSource()))
+	var out getPriceHistoryOutput
+	callOK(t, sess, "get_price_history", map[string]any{"symbol": "SPY", "start": nil, "end": nil, "interval": nil, "max_points": nil}, &out)
+	if out.Interval != intervalMonthly || out.Count != 36 {
+		t.Errorf("interval/count = %s/%d, want the defaults monthly/36", out.Interval, out.Count)
+	}
+	// A required property sent as null is still reported as missing.
+	callErr(t, sess, "get_price_history", map[string]any{"symbol": nil}, "symbol")
+}
+
+func TestDropNullProperties(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"a":1,"b":null}`, `{"a":1}`},
+		{`{"a": null , "b" : null}`, `{}`},
+		{`{"a":{"b":null}}`, `{"a":{"b":null}}`}, // only top-level keys
+		{`{"a":1}`, `{"a":1}`},
+		{`[null]`, `[null]`},
+		{`{bad`, `{bad`},
+	} {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "x", Arguments: json.RawMessage(tc.in)}}
+		var seen json.RawMessage
+		next := func(_ context.Context, _ string, req mcp.Request) (mcp.Result, error) {
+			seen = req.(*mcp.CallToolRequest).Params.Arguments
+			return &mcp.CallToolResult{}, nil
+		}
+		if _, err := emptyArguments(next)(context.Background(), "tools/call", req); err != nil {
+			t.Fatal(err)
+		}
+		if string(seen) != tc.want {
+			t.Errorf("arguments %s became %s, want %s", tc.in, seen, tc.want)
+		}
+	}
+}

@@ -65,6 +65,7 @@ func requireHeadline(t *testing.T, label string, got headlineOutput, want *sim.R
 // requireMatch compares a tool result with a sim.Result field by field.
 func requireMatch(t *testing.T, label string, got simResultOutput, want *sim.Result) {
 	t.Helper()
+	wantTimeline, wantStep := thinTimeline(want.Timeline)
 	checks := []struct {
 		name      string
 		got, want any
@@ -81,7 +82,8 @@ func requireMatch(t *testing.T, label string, got simResultOutput, want *sim.Res
 		{"max_drawdown_pct", got.MaxDrawdownPct, round2(want.MaxDrawdownPct)},
 		{"cash_dividends", got.CashDividends, round2(want.CashDividends)},
 		{"holdings", len(got.Holdings), len(want.Holdings)},
-		{"timeline", len(got.Timeline), len(want.Timeline)},
+		{"timeline", len(got.Timeline), len(wantTimeline)},
+		{"timeline_step", got.TimelineStep, wantStep},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -318,7 +320,7 @@ func TestSimulatePortfolioDCA(t *testing.T) {
 		requireMatch(t, "fractions", out.simResultOutput, want)
 	})
 
-	t.Run("fixed commission is charged once per contribution", func(t *testing.T) {
+	t.Run("fixed commission is charged once per ETF purchased", func(t *testing.T) {
 		withFee := plan
 		withFee.FeeFixed = 0.5
 		wantFee := runSim(t, src, withFee)
@@ -327,9 +329,15 @@ func TestSimulatePortfolioDCA(t *testing.T) {
 		var out simulatePortfolioDCAOutput
 		callOK(t, sess, "simulate_portfolio_dca", a, &out)
 		requireMatch(t, "portfolio commission", out.simResultOutput, wantFee)
-		if out.Fees != round2(0.5*float64(out.Contributions)) {
-			t.Errorf("fees = %v, want 0.5 × %d contributions, not per symbol", out.Fees, out.Contributions)
+		if out.Fees != round2(0.5*2*float64(out.Contributions)) {
+			t.Errorf("fees = %v, want 0.5 × 2 ETFs × %d contributions", out.Fees, out.Contributions)
 		}
+	})
+
+	t.Run("fixed commission must leave something of the smallest order", func(t *testing.T) {
+		a := args(90, 10)
+		a["amount"], a["commission_fixed"] = 10, 1
+		callErr(t, sess, "simulate_portfolio_dca", a, "commission_fixed 1 is charged per ETF and leaves nothing of SCHD's share")
 	})
 
 	t.Run("cache prefetches each symbol once", func(t *testing.T) {

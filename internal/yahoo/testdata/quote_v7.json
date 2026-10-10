@@ -25,6 +25,7 @@
     "twoHundredDayAverage": 722.4597,
     "trailingAnnualDividendYield": 0.0072849393,
     "trailingAnnualDividendRate": 5.662,
+    "dividendYield": 0.99,
     "priceHint": 2,
     "tradeable": false,
     "language": "en-US",
@@ -54,10 +55,26 @@
     "twoHundredDayAverage": 671.5183,
     "trailingAnnualDividendYield": 0.0023359244,
     "trailingAnnualDividendRate": 1.77,
+    "dividendYield": 0.42,
     "priceHint": 2,
     "tradeable": false,
     "language": "en-US",
     "region": "US"
+   },
+   {
+    "language": "en-US",
+    "region": "US",
+    "quoteType": "EQUITY",
+    "typeDisp": "Equity",
+    "triggerable": false,
+    "customPriceAlertConfidence": "LOW",
+    "hasPrePostMarketData": false,
+    "priceHint": 2,
+    "esgPopulated": false,
+    "tradeable": false,
+    "cryptoTradeable": false,
+    "corporateActions": [],
+    "symbol": "BRK.B"
    }
   ],
   "error": null

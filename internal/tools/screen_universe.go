@@ -17,6 +17,12 @@ import (
 // screenDefaultLimit is how many rows screen_universe returns by default.
 const screenDefaultLimit = 20
 
+// screenMaxSkipped caps the skipped list so a screen as of an early date,
+// when most funds did not exist yet, cannot bury the ranking under a
+// hundred skip reasons; skipped_count keeps the full number. The skipped
+// field's schema text quotes this number.
+const screenMaxSkipped = 20
+
 // screenMaxLimit lets one call return the whole universe.
 var screenMaxLimit = len(universe.All())
 
@@ -24,7 +30,7 @@ var screenMaxLimit = len(universe.All())
 // quotes the universe size, so it is built at registration.
 func screenUniverseDescription() string {
 	screened := len(universe.Filter(universe.Query{}))
-	return fmt.Sprintf("Ranks the built-in ETF universe by one metric. sort_by is momentum_12_1 (return from 12 months to 1 month ago), return_1y, return_3m, volatility_1y, max_drawdown_1y, dividend_yield (trailing 12 months over the close) or pct_vs_sma_200 (close versus its 200-day average); descending defaults to true (highest first; pass false to put the calmest or shallowest first). Every row carries all seven metrics and the trend state, as plain percentages (7.5 = 7.5%%); a metric is null when the fund's history is too short for it (most need a full year). Funds without enough history for sort_by, or that failed to load, are listed in skipped with the reason. Returns at most limit rows (default %d, max %d); leveraged and inverse funds are left out unless include_leveraged. COLD START: the first call loads the full daily history of every screened fund (about %d symbols; 10 to 90 seconds depending on the network); later calls read the on-disk cache and take well under a second. Narrow with category to load fewer funds, and use refresh_prices when the cache is stale. A ranking of past figures, not a recommendation.", screenDefaultLimit, screenMaxLimit, screened)
+	return fmt.Sprintf("Ranks the built-in ETF universe by one metric. sort_by is momentum_12_1 (return from 12 months to 1 month ago), return_1y, return_3m, volatility_1y, max_drawdown_1y, dividend_yield (trailing 12 months over the close) or pct_vs_sma_200 (close versus its 200-day average); descending defaults to true (highest first; pass false to put the calmest or shallowest first). Every row carries all seven metrics and the trend state, as plain percentages (7.5 = 7.5%%); a metric is null when the fund's history is too short for it (most need a full year). Funds without enough history for sort_by, or that failed to load, are listed in skipped with the reason (at most %d; skipped_count has the total). Returns at most limit rows (default %d, max %d); leveraged and inverse funds are left out unless include_leveraged. COLD START: the first call loads the full daily history of every screened fund (about %d symbols; 10 to 90 seconds depending on the network); later calls read the on-disk cache and take well under a second. Narrow with category to load fewer funds, and use refresh_prices when the cache is stale. A ranking of past figures, not a recommendation.", screenMaxSkipped, screenDefaultLimit, screenMaxLimit, screened)
 }
 
 type screenUniverseInput struct {
@@ -54,17 +60,18 @@ type screenRow struct {
 }
 
 type screenUniverseOutput struct {
-	SortBy     string         `json:"sort_by"`
-	Descending bool           `json:"descending"`
-	Category   string         `json:"category,omitempty"`
-	AsOf       string         `json:"as_of" jsonschema:"latest trading day used; warnings name funds whose last bar is older"`
-	Screened   int            `json:"screened" jsonschema:"funds in the screened set"`
-	Matched    int            `json:"matched" jsonschema:"funds with a value for sort_by, before limit"`
-	Truncated  bool           `json:"truncated" jsonschema:"true when matched exceeds limit and only the first rows are returned"`
-	Ranked     []screenRow    `json:"ranked"`
-	Skipped    []analysisSkip `json:"skipped" jsonschema:"funds without enough history for sort_by or that failed to load"`
-	Warnings   []string       `json:"warnings,omitempty"`
-	Disclaimer string         `json:"disclaimer"`
+	SortBy       string         `json:"sort_by"`
+	Descending   bool           `json:"descending"`
+	Category     string         `json:"category,omitempty"`
+	AsOf         string         `json:"as_of" jsonschema:"latest trading day used; warnings name funds whose last bar is older"`
+	Screened     int            `json:"screened" jsonschema:"funds in the screened set"`
+	Matched      int            `json:"matched" jsonschema:"funds with a value for sort_by, before limit"`
+	Truncated    bool           `json:"truncated" jsonschema:"true when matched exceeds limit and only the first rows are returned"`
+	Ranked       []screenRow    `json:"ranked"`
+	Skipped      []analysisSkip `json:"skipped" jsonschema:"funds without enough history for sort_by or that failed to load, the first 20 in universe order"`
+	SkippedCount int            `json:"skipped_count" jsonschema:"number of funds skipped, including those beyond the listed 20"`
+	Warnings     []string       `json:"warnings,omitempty"`
+	Disclaimer   string         `json:"disclaimer"`
 }
 
 // screenUniverseSchema publishes the sort keys as an enum, the defaults
@@ -113,6 +120,11 @@ func (d Deps) screenUniverse(ctx context.Context, in screenUniverseInput) (scree
 		symbols = append(symbols, e.Symbol)
 	}
 	series, errs := d.fetchAll(ctx, symbols)
+	// A cancelled request leaves most funds unloaded; ranking the rest
+	// would present a partial screen as complete.
+	if err := ctx.Err(); err != nil {
+		return screenUniverseOutput{}, err
+	}
 
 	var (
 		scores  []analytics.Score
@@ -145,15 +157,16 @@ func (d Deps) screenUniverse(ctx context.Context, in screenUniverseInput) (scree
 	}
 
 	out := screenUniverseOutput{
-		SortBy:     sortBy,
-		Descending: descending,
-		Category:   screenCategoryName(category),
-		Screened:   len(symbols),
-		Matched:    len(ranked),
-		Truncated:  len(ranked) > limit,
-		Ranked:     make([]screenRow, 0, min(limit, len(ranked))),
-		Skipped:    skipped,
-		Disclaimer: Disclaimer,
+		SortBy:       sortBy,
+		Descending:   descending,
+		Category:     screenCategoryName(category),
+		Screened:     len(symbols),
+		Matched:      len(ranked),
+		Truncated:    len(ranked) > limit,
+		Ranked:       make([]screenRow, 0, min(limit, len(ranked))),
+		Skipped:      skipped[:min(screenMaxSkipped, len(skipped))],
+		SkippedCount: len(skipped),
+		Disclaimer:   Disclaimer,
 	}
 	for i, sc := range ranked[:min(limit, len(ranked))] {
 		e, _ := universe.Get(sc.Symbol)

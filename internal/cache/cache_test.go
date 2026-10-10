@@ -510,8 +510,8 @@ func TestStoreFutureFetchTimeIsStale(t *testing.T) {
 
 func TestNewSweepsOldTempFiles(t *testing.T) {
 	dir := t.TempDir()
-	old := filepath.Join(dir, "SPY.123.tmp")
-	fresh := filepath.Join(dir, "QQQ.456.tmp")
+	old := filepath.Join(dir, "SPY.json.123.tmp")
+	fresh := filepath.Join(dir, "QQQ.json.456.tmp")
 	keep := filepath.Join(dir, "SPY.json")
 	for _, p := range []string{old, fresh, keep} {
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
@@ -662,4 +662,171 @@ func TestDefaultDir(t *testing.T) {
 			t.Errorf("DefaultDir did not create %q: %v", got, err)
 		}
 	})
+}
+
+// writeTestFile creates path, and its directory, holding content.
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// setModTime sets the modification time of path to at.
+func setModTime(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestNewSweepsOnlyItsOwnTempFiles: the sweep lists the cache directory
+// instead of globbing a pattern built from its path, so glob characters
+// in the path cannot reach another directory, and it deletes only the
+// temporary files writeJSONAtomic creates.
+func TestNewSweepsOnlyItsOwnTempFiles(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "cache[x]")
+	own := filepath.Join(dir, "SPY.json.123.tmp")
+	foreign := filepath.Join(dir, "browser-download.tmp")
+	sibling := filepath.Join(root, "cachex", "SPY.json.456.tmp") // matched by the glob cache[x]/*.tmp
+	past := time.Now().Add(-time.Hour)
+	for _, p := range []string{own, foreign, sibling} {
+		writeTestFile(t, p, "x")
+		setModTime(t, p, past)
+	}
+
+	New(&fakeSource{}, dir, time.Hour)
+
+	if exists(own) {
+		t.Error("the cache's own stale temp file was not swept")
+	}
+	if !exists(foreign) {
+		t.Error("another program's temp file in the cache dir was swept")
+	}
+	if !exists(sibling) {
+		t.Error("a temp file in a sibling directory was swept")
+	}
+}
+
+func TestIsOwnTempFile(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"SPY.json.123.tmp", true},
+		{"BRK-B.json.4294967295.tmp", true},
+		{"SPY.profile.json.42.tmp", true},
+		{"SPY.123.tmp", false},
+		{"SPY.json.tmp", false},
+		{"SPY.json.12a.tmp", false},
+		{"spy.json.123.tmp", false},
+		{"SPY.unknown.json.1.tmp", false},
+		{"editor-swap.tmp", false},
+		{"SPY.json", false},
+	}
+	for _, tt := range tests {
+		if got := isOwnTempFile(tt.name); got != tt.want {
+			t.Errorf("isOwnTempFile(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestStoreCancelledCallerStartsNoFetch: a caller whose context is already
+// done must not start a detached download that nobody waits for.
+func TestStoreCancelledCallerStartsNoFetch(t *testing.T) {
+	s, f := newStore(t, time.Hour)
+	f.gate = make(chan struct{}) // a download, if one started, would stay in flight
+	defer close(f.gate)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := s.Series(ctx, "SPY"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Series error = %v, want context.Canceled", err)
+	}
+	if _, err := s.Refresh(ctx, "QQQ"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Refresh error = %v, want context.Canceled", err)
+	}
+	s.mu.Lock()
+	inflight := len(s.inflight)
+	s.mu.Unlock()
+	if inflight != 0 || f.count() != 0 {
+		t.Errorf("in flight = %d, source calls = %d; want no download started", inflight, f.count())
+	}
+}
+
+// TestStoreFetchRechecksFreshFile: a caller that read a stale file just
+// before another fetch rewrote it serves the new file instead of fetching
+// again; a forced full fetch still goes upstream.
+func TestStoreFetchRechecksFreshFile(t *testing.T) {
+	s, f := newStore(t, time.Hour)
+	fresh := &entry{Version: formatVersion, FetchedAt: t0, FullFetchedAt: t0, Series: sampleSeries("SPY")}
+	if err := s.writeEntry("SPY", fresh); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.fetch(context.Background(), "SPY", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSeries(t, out.series, "SPY")
+	if f.count() != 0 {
+		t.Errorf("calls = %d, want 0: the file is fresh", f.count())
+	}
+	if _, err := s.fetch(context.Background(), "SPY", true); err != nil {
+		t.Fatal(err)
+	}
+	if f.count() != 1 {
+		t.Errorf("calls = %d, want 1 for a full fetch", f.count())
+	}
+}
+
+// TestStoreRefreshReport: the report describes this call's download, not
+// whatever LastError holds by the time the caller looks.
+func TestStoreRefreshReport(t *testing.T) {
+	ctx := context.Background()
+	s, f := newStore(t, time.Hour)
+
+	r, err := s.RefreshReport(ctx, "spy")
+	if err != nil || !r.Replaced() {
+		t.Fatalf("first refresh = %+v, %v; want a replaced file", r, err)
+	}
+	assertSeries(t, r.Series, "SPY")
+
+	f.setErr(errUpstream)
+	r, err = s.RefreshReport(ctx, "SPY")
+	if err != nil {
+		t.Fatalf("failed refresh with a cached file returned %v, want the stale series", err)
+	}
+	if r.Replaced() || !errors.Is(r.FetchErr, errUpstream) || r.WriteErr != nil {
+		t.Errorf("failed refresh = %+v, want FetchErr only", r)
+	}
+	assertSeries(t, r.Series, "SPY")
+
+	// Another call's successful fetch clears LastError; the report keeps
+	// the failure of the refresh it describes.
+	f.setErr(nil)
+	if _, err := s.Refresh(ctx, "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	if s.LastError("SPY") != nil || !errors.Is(r.FetchErr, errUpstream) {
+		t.Errorf("LastError = %v, report FetchErr = %v", s.LastError("SPY"), r.FetchErr)
+	}
+
+	f.setErr(errUpstream)
+	if _, err := s.RefreshReport(ctx, "NEW"); !errors.Is(err, errUpstream) {
+		t.Errorf("failed refresh without a file = %v, want the upstream error", err)
+	}
+	if _, err := s.RefreshReport(ctx, "bad/sym"); !errors.Is(err, ErrInvalidSymbol) {
+		t.Errorf("invalid symbol = %v, want ErrInvalidSymbol", err)
+	}
+
+	blocked := filepath.Join(t.TempDir(), "not-a-dir")
+	writeTestFile(t, blocked, "x")
+	r, err = New(&fakeSource{}, blocked, time.Hour).RefreshReport(ctx, "SPY")
+	if err != nil || r.Replaced() || r.FetchErr != nil || r.WriteErr == nil {
+		t.Errorf("refresh that cannot write = %+v, %v; want WriteErr only", r, err)
+	}
 }

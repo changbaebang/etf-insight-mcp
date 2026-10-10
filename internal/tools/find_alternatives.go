@@ -20,10 +20,14 @@ const (
 	altDefaultLimit          = 8
 	altMaxLimit              = 20
 	altDefaultMinCorrelation = 0.9
-	altDifferentCount        = 3  // least-correlated funds listed for context
-	altWindowYears           = 3  // comparison window ending on the base's last bar
-	altMinCommonBars         = 20 // fewer common days make a correlation meaningless
-	altCorrDecimals          = 1000.0
+	altDifferentCount        = 3 // least-correlated funds listed for context
+	// altDifferentMaxCorrelation bounds different_exposure from above
+	// whatever min_correlation is, so a strict threshold cannot fill it
+	// with near-identical funds.
+	altDifferentMaxCorrelation = 0.9
+	altWindowYears             = 3  // comparison window ending on the base's last bar
+	altMinCommonBars           = 20 // fewer common days make a correlation meaningless
+	altCorrDecimals            = 1000.0
 )
 
 // altEquityCategories are searched besides the base's own category for a
@@ -34,7 +38,7 @@ var altEquityCategories = []string{"US Broad Market", "US Large Cap", "US Large 
 var altBondCategories = []string{"US Treasury", "US Aggregate Bond", "Corporate Bond", "High Yield Bond", "Municipal Bond", "International Bond", "Inflation Protected", "Cash / Ultra Short"}
 
 // findAlternativesDescription is written for the model choosing a tool.
-const findAlternativesDescription = "Answers 'I buy this ETF regularly; is there something similar, and how does it differ?' with facts, not advice. Candidates are universe funds in the symbol's own category plus, with include_other_categories (default true), the broad US equity categories (US Broad Market, US Large Cap, US Large Growth, US Large Value, Dividend, Factor) for a stock fund or every bond category for a bond fund; leveraged and inverse funds are never candidates. Each candidate is measured against the symbol over their common history in the last 3 years (shorter when either fund is younger; short_history flags it): correlation and beta of daily returns, expense ratio and its difference in percentage points, trailing-12-month dividend yield, 1-year return, annualized return, 1-year volatility, max drawdown, tracking difference (candidate annualized minus the symbol's annualized) and a one-line observation. candidates keeps correlation >= min_correlation (default 0.9), ranked by correlation to 3 decimals then lower expense ratio, at most limit (default 8, max 20); different_exposure adds the 3 least correlated funds for diversification context. Returns come from adjusted closes, which are NAV-based and already net of expense ratios, so do not subtract fees again. Percentages are plain numbers (0.03 = 0.03%). The first call loads up to about 70 funds (a few seconds to a minute on a cold cache, fast afterwards); funds that fail to load are listed in skipped."
+const findAlternativesDescription = "Answers 'I buy this ETF regularly; is there something similar, and how does it differ?' with facts, not advice. Candidates are universe funds in the symbol's own category plus, with include_other_categories (default true), the broad US equity categories (US Broad Market, US Large Cap, US Large Growth, US Large Value, Dividend, Factor) for a stock fund or every bond category for a bond fund; leveraged and inverse funds are never candidates. The symbol must be quoted in USD. Each candidate is measured against the symbol over their common history in the last 3 years (shorter when either fund is younger; short_history flags it): correlation and beta of daily returns, expense ratio and its difference in percentage points, trailing-12-month dividend yield, 1-year return, annualized return (null when the common history is under 365 days), 1-year volatility, max drawdown, tracking difference (candidate annualized minus the symbol's annualized) and a one-line observation. candidates keeps correlation >= min_correlation (default 0.9), ranked by correlation to 3 decimals then lower expense ratio, at most limit (default 8, max 20). different_exposure lists, for diversification context, up to 3 of the least correlated funds measured whose correlation is below 0.9 and that are not already among candidates; it does not depend on min_correlation. Returns come from adjusted closes, which are NAV-based and already net of expense ratios, so do not subtract fees again. Percentages are plain numbers (0.03 = 0.03%). The first call loads up to about 70 funds (a few seconds to a minute on a cold cache, fast afterwards); funds that fail to load are listed in skipped."
 
 type findAlternativesInput struct {
 	Symbol                 string   `json:"symbol" jsonschema:"the ETF bought today, e.g. VOO; case-insensitive"`
@@ -68,10 +72,10 @@ type alternativeCandidate struct {
 	ExpenseRatioDiffPctPoints *float64      `json:"expense_ratio_diff_pct_points" jsonschema:"candidate minus base expense ratio in percentage points, negative = cheaper; null when either is unknown"`
 	TTMDividendYieldPct       float64       `json:"ttm_dividend_yield_pct"`
 	Return1YPct               *float64      `json:"return_1y_pct" jsonschema:"trailing 1-year total return as of the base's as_of; null with less than a year of history"`
-	Return3YAnnualizedPct     *float64      `json:"return_3y_annualized_pct" jsonschema:"annualized total return over common_range (3 years unless short_history); null when the range is under a year"`
+	Return3YAnnualizedPct     *float64      `json:"return_3y_annualized_pct" jsonschema:"annualized total return over common_range (3 years unless short_history); null when the range is under 365 days"`
 	Volatility1YPct           float64       `json:"volatility_1y_pct"`
 	MaxDrawdown3YPct          float64       `json:"max_drawdown_3y_pct" jsonschema:"largest fall from a prior high within common_range"`
-	TrackingDifference3YPct   *float64      `json:"tracking_difference_3y_pct" jsonschema:"candidate annualized return minus base annualized return over common_range, percentage points; null when the range is under a year"`
+	TrackingDifference3YPct   *float64      `json:"tracking_difference_3y_pct" jsonschema:"candidate annualized return minus base annualized return over common_range, percentage points; null when the range is under 365 days"`
 	CommonRange               analysisRange `json:"common_range" jsonschema:"trading days the candidate and the base share in the comparison window"`
 	ShortHistory              bool          `json:"short_history" jsonschema:"true when common_range is shorter than the window (3 years, or the base's whole history when that is shorter)"`
 	Observation               string        `json:"observation" jsonschema:"one-line factual summary of how the candidate differs from the base"`
@@ -105,7 +109,7 @@ type findAlternativesOutput struct {
 	Considered         int                    `json:"considered" jsonschema:"candidate funds measured"`
 	Matched            int                    `json:"matched" jsonschema:"candidates with correlation >= min_correlation, before limit"`
 	Candidates         []alternativeCandidate `json:"candidates" jsonschema:"similar funds, ranked by correlation (3 decimals) then lower expense ratio"`
-	DifferentExposure  []alternativeCandidate `json:"different_exposure" jsonschema:"up to 3 of the least correlated funds searched, for diversification context"`
+	DifferentExposure  []alternativeCandidate `json:"different_exposure" jsonschema:"up to 3 of the least correlated funds measured, below correlation 0.9 and not among candidates, whatever min_correlation is; for diversification context"`
 	Skipped            []analysisSkip         `json:"skipped" jsonschema:"funds that could not be measured, with the reason"`
 	Notes              []string               `json:"notes"`
 	Warnings           []string               `json:"warnings,omitempty"`
@@ -146,6 +150,11 @@ func (d Deps) findAlternatives(ctx context.Context, in findAlternativesInput) (f
 	if err != nil {
 		return findAlternativesOutput{}, err
 	}
+	// Candidates are US-listed USD funds whose daily returns are paired
+	// with the base's by calendar date, so the base must be one too.
+	if err := analysisRequireUSD(base); err != nil {
+		return findAlternativesOutput{}, err
+	}
 	baseSym := base.Meta.Symbol
 	entry, known := universe.Get(baseSym)
 	if !known && !includeOther {
@@ -162,9 +171,12 @@ func (d Deps) findAlternatives(ctx context.Context, in findAlternativesInput) (f
 	window := altWindow(base)
 
 	loaded, errs := d.fetchAll(ctx, pool)
+	if err := ctx.Err(); err != nil {
+		return findAlternativesOutput{}, err
+	}
 	skipped := []analysisSkip{}
 	fetched := []string{baseSym}
-	var similar, different []altMeasured
+	var measured []altMeasured
 	for _, sym := range pool {
 		if err := errs[sym]; err != nil {
 			skipped = append(skipped, analysisSkip{Symbol: sym, Reason: err.Error()})
@@ -172,26 +184,26 @@ func (d Deps) findAlternatives(ctx context.Context, in findAlternativesInput) (f
 		}
 		fetched = append(fetched, sym)
 		m, reason := altMeasure(base, loaded[sym], window, sum.AsOf)
-		switch {
-		case reason != "":
+		if reason != "" {
 			skipped = append(skipped, analysisSkip{Symbol: sym, Reason: reason})
-		case m.out.CorrelationToBase >= minCorr:
-			similar = append(similar, m)
-		default:
-			different = append(different, m)
+			continue
 		}
+		measured = append(measured, m)
 	}
-	considered := len(similar) + len(different)
-	slices.SortFunc(different, func(a, b altMeasured) int {
-		return cmp.Or(cmp.Compare(a.out.CorrelationToBase, b.out.CorrelationToBase), strings.Compare(a.out.Symbol, b.out.Symbol))
+	similar := slices.DeleteFunc(slices.Clone(measured), func(m altMeasured) bool {
+		return m.out.CorrelationToBase < minCorr
 	})
-	different = different[:min(altDifferentCount, len(different))]
+	unlike := altLeastCorrelated(measured)
+	// At most limit of the unlike funds can also be shown as candidates,
+	// so the first limit+altDifferentCount hold every different_exposure
+	// pick.
+	unlike = unlike[:min(limit+altDifferentCount, len(unlike))]
 
 	// Expense ratios are looked up only for the funds that can appear in
-	// the answer: every similar one (they rank by it) and the few
-	// different ones.
+	// the answer: every similar one (they rank by it) and the least
+	// correlated ones different_exposure picks from.
 	lookup := []string{baseSym}
-	for _, m := range slices.Concat(similar, different) {
+	for _, m := range slices.Concat(similar, unlike) {
 		lookup = append(lookup, m.out.Symbol)
 	}
 	ratios, ratioWarnings := d.analysisExpenseRatios(ctx, lookup)
@@ -204,28 +216,84 @@ func (d Deps) findAlternatives(ctx context.Context, in findAlternativesInput) (f
 		}
 		return out
 	}
-	for i := range similar {
-		similar[i].expense = analysisExpensePct(ratios, similar[i].out.Symbol)
-	}
-	for i := range different {
-		different[i].expense = analysisExpensePct(ratios, different[i].out.Symbol)
+	for _, list := range [][]altMeasured{similar, unlike} {
+		for i := range list {
+			list[i].expense = analysisExpensePct(ratios, list[i].out.Symbol)
+		}
 	}
 	slices.SortFunc(similar, altCompareSimilar)
+	shown := similar[:min(limit, len(similar))]
+	different := altDifferent(unlike, shown)
+
+	notes := altNotes(baseSym, base, known, window)
+	if len(different) == 0 {
+		notes = append(notes, fmt.Sprintf("different_exposure is empty: no fund measured outside candidates has a correlation below %g with %s", altDifferentMaxCorrelation, baseSym))
+	}
+	if short := altShortHistory(base, loaded, slices.Concat(shown, different), sum.AsOf); len(short) > 0 {
+		notes = append(notes, fmt.Sprintf("%s %s less than 52 weeks of history up to %s, so 1-year volatility and trailing-12-month dividend yield cover only that shorter span and are not full-year figures",
+			strings.Join(short, ", "), compareHasOrHave(len(short)), formatDate(sum.AsOf)))
+	}
+	if note := instrumentNote(base); note != "" {
+		notes = append(notes, note)
+	}
 
 	return findAlternativesOutput{
 		Base:               altBaseOutput(base, entry, sum, baseER),
 		MinCorrelation:     minCorr,
 		CategoriesSearched: categories,
 		CommonRange:        window.wire(),
-		Considered:         considered,
+		Considered:         len(measured),
 		Matched:            len(similar),
-		Candidates:         finish(similar[:min(limit, len(similar))]),
+		Candidates:         finish(shown),
 		DifferentExposure:  finish(different),
 		Skipped:            skipped,
-		Notes:              altNotes(baseSym, base, known, window),
+		Notes:              notes,
 		Warnings:           append(d.analysisCacheWarnings(fetched), ratioWarnings...),
 		Disclaimer:         Disclaimer,
 	}, nil
+}
+
+// altLeastCorrelated returns the measured funds whose correlation with the
+// base is below altDifferentMaxCorrelation, least correlated first.
+func altLeastCorrelated(measured []altMeasured) []altMeasured {
+	unlike := slices.DeleteFunc(slices.Clone(measured), func(m altMeasured) bool {
+		return m.out.CorrelationToBase >= altDifferentMaxCorrelation
+	})
+	slices.SortFunc(unlike, func(a, b altMeasured) int {
+		return cmp.Or(cmp.Compare(a.out.CorrelationToBase, b.out.CorrelationToBase), strings.Compare(a.out.Symbol, b.out.Symbol))
+	})
+	return unlike
+}
+
+// altDifferent picks the first altDifferentCount funds of unlike (least
+// correlated first) that are not already shown as candidates.
+func altDifferent(unlike, shown []altMeasured) []altMeasured {
+	var out []altMeasured
+	for _, m := range unlike {
+		if len(out) == altDifferentCount {
+			break
+		}
+		isShown := slices.ContainsFunc(shown, func(c altMeasured) bool { return c.out.Symbol == m.out.Symbol })
+		if !isShown {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// altShortHistory lists the base and then each listed fund whose history
+// up to asOf is shorter than 52 weeks.
+func altShortHistory(base *market.Series, loaded map[string]*market.Series, listed []altMeasured, asOf time.Time) []string {
+	var short []string
+	if !hasTrailingYear(base, asOf) {
+		short = append(short, base.Meta.Symbol)
+	}
+	for _, m := range listed {
+		if s := loaded[m.out.Symbol]; s != nil && !hasTrailingYear(s, asOf) {
+			short = append(short, m.out.Symbol)
+		}
+	}
+	return short
 }
 
 // altPool lists the categories to search and their non-leveraged funds,
@@ -302,10 +370,11 @@ func altMeasure(base, cand *market.Series, window altSpan, asOf time.Time) (altM
 	if e, ok := universe.Get(c.Symbol); ok {
 		c.Name, c.Category = e.Name, e.Category
 	}
-	if last.Sub(first) >= minAnnualizedSpan {
-		candAnn := altAnnualized(aligned[1], first, last)
-		c.Return3YAnnualizedPct = analysisPctOrNil(candAnn)
-		c.TrackingDifference3YPct = analysisPctOrNil(candAnn - altAnnualized(aligned[0], first, last))
+	candAnn, candOK := analysisAnnualized(aligned[1], first, last)
+	baseAnn, baseOK := analysisAnnualized(aligned[0], first, last)
+	if candOK && baseOK {
+		c.Return3YAnnualizedPct = ptr(pct(candAnn))
+		c.TrackingDifference3YPct = ptr(pct(candAnn - baseAnn))
 	}
 	return altMeasured{
 		out:             c,
@@ -323,13 +392,6 @@ func altWindowReturn(sum analytics.Summary, label string) *float64 {
 		}
 	}
 	return nil
-}
-
-// altAnnualized is the compound annual growth of prices between the dates
-// of their first and last entries.
-func altAnnualized(prices []float64, from, to time.Time) float64 {
-	years := to.Sub(from).Hours() / 24 / 365.25
-	return math.Pow(prices[len(prices)-1]/prices[0], 1/years) - 1
 }
 
 // altFinish adds the expense ratios and the observation to a measured
@@ -356,7 +418,9 @@ func altObservation(c alternativeCandidate, m altMeasured, baseSym, baseCategory
 	case corr >= 0.9:
 		level = "similar"
 	}
-	exposure := fmt.Sprintf("%s exposure (corr %.3f)", level, c.CorrelationToBase)
+	// Four decimals, as in correlation_to_base: three would print 0.9996
+	// as a perfect 1.000.
+	exposure := fmt.Sprintf("%s exposure (corr %.4f)", level, c.CorrelationToBase)
 	if c.Category != "" && c.Category != baseCategory {
 		exposure += ", " + c.Category + " fund"
 	}

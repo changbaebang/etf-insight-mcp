@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"errors"
+	"math"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -192,8 +194,9 @@ func TestDCAReportPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list prompts: %v", err)
 	}
-	if len(list.Prompts) != 1 || list.Prompts[0].Name != "dca_report" || len(list.Prompts[0].Arguments) != 4 {
-		t.Fatalf("prompts = %+v, want one dca_report with 4 arguments", list.Prompts)
+	// symbol, amount, currency, start, cadence, fee_rate, commission_fixed
+	if len(list.Prompts) != 1 || list.Prompts[0].Name != "dca_report" || len(list.Prompts[0].Arguments) != 7 {
+		t.Fatalf("prompts = %+v, want one dca_report with 7 arguments", list.Prompts)
 	}
 
 	res, err := sess.GetPrompt(ctx, &mcp.GetPromptParams{
@@ -264,5 +267,97 @@ func TestHelpers(t *testing.T) {
 	}
 	if got := userError(errors.New("sim: amount must be > 0")); got.Error() != "amount must be > 0" {
 		t.Errorf("userError = %q", got)
+	}
+}
+
+func TestDescribeFetchErrorPointsAtSearch(t *testing.T) {
+	got := describeFetchError("BRK.B", market.ErrNotFound).Error()
+	if !strings.Contains(got, "search_symbols") {
+		t.Errorf("describeFetchError = %q, want it to point at search_symbols", got)
+	}
+	if !strings.Contains(Instructions, "an unknown symbol points at list_etfs and search_symbols") {
+		t.Error("Instructions do not say where an unknown symbol points")
+	}
+}
+
+func TestRoundingNeverGivesNegativeZero(t *testing.T) {
+	for name, got := range map[string]float64{
+		"round2": round2(-0.001),
+		"round4": round4(-0.00001),
+		"pct":    pct(-0.00001),
+	} {
+		if got != 0 || math.Signbit(got) {
+			t.Errorf("%s of a tiny negative = %v (sign bit %v), want +0", name, got, math.Signbit(got))
+		}
+	}
+	if got := round2(-1.234); got != -1.23 {
+		t.Errorf("round2(-1.234) = %v, want -1.23", got)
+	}
+}
+
+func TestParseDateRejectsYearsBefore1900(t *testing.T) {
+	for _, v := range []string{"0001-01-01", "1899-12-31"} {
+		if _, err := parseDate("end", v); err == nil || !strings.Contains(err.Error(), "1900") {
+			t.Errorf("parseDate(%s) error = %v, want an out-of-range error", v, err)
+		}
+		if _, err := parseOptionalDate("end", v); err == nil {
+			t.Errorf("parseOptionalDate(%s) succeeded, want an error", v)
+		}
+	}
+	if _, err := parseDate("start", "1900-01-01"); err != nil {
+		t.Errorf("parseDate(1900-01-01) = %v, want ok", err)
+	}
+	sess := newSession(t, testDeps(newFakeSource()))
+	callErr(t, sess, "get_price_history", map[string]any{"symbol": "SPY", "start": "2023-01-01", "end": "0001-01-01"}, "1900")
+}
+
+func TestInstructionsDoNotFixTheCacheDirectory(t *testing.T) {
+	if !strings.Contains(Instructions, "cache_status shows the directory in use") {
+		t.Error("Instructions should say the cache directory is a default that cache_status reports")
+	}
+}
+
+// TestWriteFailureWarningMatchesWhatWasServed forces a refresh whose cache
+// write fails while the previous file is still fresh. Later reads are
+// served from that older file without any fetch, so the warning must not
+// claim that the data is current or refetched on every call.
+func TestWriteFailureWarningMatchesWhatWasServed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	src := newFakeSource()
+	dir := t.TempDir()
+	store := cache.New(src, dir, time.Hour, cache.WithClock(func() time.Time { return now }))
+	deps := testDeps(store)
+	deps.Cache = store
+	ctx := context.Background()
+	if _, err := store.Series(ctx, "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := store.Refresh(ctx, "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	if store.LastWriteError("SPY") == nil {
+		t.Fatal("the refresh was written although the directory is read-only")
+	}
+
+	// The refreshed series could not be written, so the store keeps it in
+	// memory: the read serves it without a third fetch and without falling
+	// back to the older file, and the warning says the data is current.
+	var out getPriceHistoryOutput
+	callOK(t, newSession(t, deps), "get_price_history", map[string]any{"symbol": "SPY"}, &out)
+	if n := src.callCount("SPY"); n != 2 {
+		t.Fatalf("SPY fetched %d times, want 2: the read must come from memory", n)
+	}
+	w := strings.Join(out.Warnings, "\n")
+	if !strings.Contains(w, "SPY is current but could not be written to the cache") || !strings.Contains(w, "keeps it in memory") {
+		t.Errorf("warnings = %q, want the write failure reported with the data called current", out.Warnings)
+	}
+	if strings.Contains(w, "older cached") || strings.Contains(w, "may be stale") {
+		t.Errorf("warning %q suggests older data, but the refreshed series was served", w)
 	}
 }

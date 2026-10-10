@@ -376,3 +376,92 @@ func TestStoreOptions(t *testing.T) {
 		t.Errorf("non-positive settings did not fall back to the defaults: %+v", zero)
 	}
 }
+
+// TestStoreRefreshDuringTopUpFetchesInFull: a Refresh that arrives while a
+// top-up of the same symbol is in flight must not settle for the top-up,
+// which cannot see a correction outside its window.
+func TestStoreRefreshDuringTopUpFetchesInFull(t *testing.T) {
+	s, f := newRangeStore(t)
+	seed(t, s, staleEntry())
+	f.gate = make(chan struct{})
+
+	topUpDone := make(chan error, 1)
+	go func() {
+		_, err := s.Series(context.Background(), "SPY")
+		topUpDone <- err
+	}()
+	waitFor(t, "the top-up to reach the range source", func() bool { return f.ranges() == 1 })
+
+	refreshDone := make(chan Refreshed, 1)
+	go func() {
+		r, err := s.RefreshReport(context.Background(), "SPY")
+		if err != nil {
+			t.Errorf("Refresh: %v", err)
+		}
+		refreshDone <- r
+	}()
+	// Give the refresh time to find the top-up in flight, then let both run.
+	time.Sleep(20 * time.Millisecond)
+	close(f.gate)
+
+	if err := <-topUpDone; err != nil {
+		t.Fatalf("top-up: %v", err)
+	}
+	r := <-refreshDone
+	if f.ranges() != 1 || f.count() != 1 {
+		t.Errorf("range calls = %d, full calls = %d; want the top-up and then a full fetch", f.ranges(), f.count())
+	}
+	if !r.Replaced() || r.Series.Len() != 8 {
+		t.Errorf("refresh = %+v, want the full history written", r)
+	}
+	if e := readFile(t, s, "SPY"); !e.FullFetchedAt.Equal(t0) {
+		t.Errorf("full_fetched_at = %v, want now", e.FullFetchedAt)
+	}
+}
+
+// TestStoreTopUpWithoutOverlapFetchesInFull: a tail that brings new bars
+// but none of the cached days in its window cannot be checked against the
+// cache, so it must not be appended.
+func TestStoreTopUpWithoutOverlapFetchesInFull(t *testing.T) {
+	s, f := newRangeStore(t)
+	seed(t, s, staleEntry())
+	f.tail = func(string, time.Time, time.Time) *market.Series {
+		return mkSeries("SPY", "2026-10-05:1050", "2026-10-06:1060", "2026-10-07:1070") // rewritten scale
+	}
+	got, err := s.Series(context.Background(), "SPY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.count() != 1 {
+		t.Errorf("full calls = %d, want 1", f.count())
+	}
+	if want := closes(providerHistory()); !equalFloats(closes(got), want) {
+		t.Errorf("closes = %v, want the full history %v", closes(got), want)
+	}
+}
+
+// TestStoreTopUpWithheldNewestBar: the provider withholds the newest
+// cached day for a while after the close. The top-up drops the cached
+// intraday bar instead of downloading the whole history.
+func TestStoreTopUpWithheldNewestBar(t *testing.T) {
+	s, f := newRangeStore(t)
+	seed(t, s, staleEntry())
+	f.tail = func(_ string, from, to time.Time) *market.Series {
+		h := cachedHistory()
+		h.Bars = h.Bars[:len(h.Bars)-1] // no 2026-10-02 bar yet
+		return cut(h, from, to)
+	}
+	got, err := s.Series(context.Background(), "SPY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ranges() != 1 || f.count() != 0 {
+		t.Errorf("range calls = %d, full calls = %d; want 1 and 0", f.ranges(), f.count())
+	}
+	if want := []float64{100, 101, 102, 103}; !equalFloats(closes(got), want) {
+		t.Errorf("closes = %v, want %v", closes(got), want)
+	}
+	if e := readFile(t, s, "SPY"); !e.FullFetchedAt.Equal(staleEntry().FullFetchedAt) {
+		t.Errorf("full_fetched_at = %v, want unchanged after a top-up", e.FullFetchedAt)
+	}
+}

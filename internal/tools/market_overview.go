@@ -51,26 +51,27 @@ type overviewRow struct {
 	ChangePct     float64  `json:"change_pct"`
 	PreviousClose float64  `json:"previous_close"`
 	MarketState   string   `json:"market_state"`
-	AsOf          string   `json:"as_of" jsonschema:"time of the price in UTC, RFC 3339"`
+	QuoteTime     string   `json:"quote_time" jsonschema:"time of the price, UTC RFC 3339 timestamp"`
+	Stale         bool     `json:"stale,omitempty" jsonschema:"true when refreshing the quote failed and the last one held in memory is shown; warnings give its age"`
 	Trend         string   `json:"trend,omitempty" jsonschema:"uptrend, downtrend, sideways or insufficient-history from the daily history (50/200-day averages and their slope); absent for VIX or when the history could not be loaded"`
 	TrendAsOf     string   `json:"trend_as_of,omitempty" jsonschema:"date of the last daily bar the trend uses"`
 	PctVsSMA200   *float64 `json:"pct_vs_sma_200,omitempty" jsonschema:"percent above (+) or below (-) the 200-day average"`
 }
 
 type marketOverviewOutput struct {
-	AsOf       string        `json:"as_of" jsonschema:"latest quote time among the rows, UTC RFC 3339"`
-	Rows       []overviewRow `json:"rows"`
-	Missing    []string      `json:"missing" jsonschema:"symbols without a quote"`
-	Notes      []string      `json:"notes"`
-	Warnings   []string      `json:"warnings,omitempty"`
-	Disclaimer string        `json:"disclaimer"`
+	LatestQuoteTime string        `json:"latest_quote_time" jsonschema:"latest quote time among the rows, UTC RFC 3339 timestamp"`
+	Rows            []overviewRow `json:"rows"`
+	Missing         []string      `json:"missing" jsonschema:"symbols without a quote; warnings say whether the provider does not know them or fetching them failed"`
+	Notes           []string      `json:"notes"`
+	Warnings        []string      `json:"warnings,omitempty"`
+	Disclaimer      string        `json:"disclaimer"`
 }
 
 func (d Deps) registerMarketOverview(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "market_overview",
 		Title:       "Market overview",
-		Description: "One-call snapshot of the broad market: delayed quotes with change_pct for SPY (S&P 500), QQQ (Nasdaq-100), DIA (Dow), IWM (small caps), VEA (developed ex-US), VWO (emerging), TLT (long Treasuries), BND (US bonds), GLD (gold) and the VIX index (label VIX), plus each ETF's rule-based trend state and distance from its 200-day average computed from the cached daily history. Use it when asked how markets are doing today or for context before discussing a plan. Takes no input. change_pct and pct_vs_sma_200 are percentages; trend describes the recent price path, not a forecast.",
+		Description: "One-call snapshot of the broad market: delayed quotes with change_pct for SPY (S&P 500), QQQ (Nasdaq-100), DIA (Dow), IWM (small caps), VEA (developed ex-US), VWO (emerging), TLT (long Treasuries), BND (US bonds), GLD (gold) and the VIX index (label VIX), plus each ETF's rule-based trend state and distance from its 200-day average computed from the cached daily history. Use it when asked how markets are doing today or for context before discussing a plan. Takes no input. change_pct and pct_vs_sma_200 are percentages; trend describes the recent price path, not a forecast. Quotes are cached for up to 15 minutes; when a refresh fails, the last quotes held in memory are shown, marked stale, with a warning giving their age.",
 		Annotations: readOnly("Market overview", true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ marketOverviewInput) (*mcp.CallToolResult, marketOverviewOutput, error) {
 		out, err := d.marketOverview(ctx)
@@ -95,14 +96,13 @@ func (d Deps) marketOverview(ctx context.Context) (marketOverviewOutput, error) 
 	}
 
 	type quoteResult struct {
-		quotes  []market.Quote
-		missing []string
-		err     error
+		batch quoteBatch
+		err   error
 	}
 	quoted := make(chan quoteResult, 1)
 	go func() {
-		q, missing, err := d.fetchQuotes(ctx, fund, syms)
-		quoted <- quoteResult{quotes: q, missing: missing, err: err}
+		b, err := fetchQuotes(ctx, fund, syms)
+		quoted <- quoteResult{batch: b, err: err}
 	}()
 	seriesCtx, cancel := context.WithTimeout(ctx, overviewSeriesTimeout)
 	series, failed := d.fetchAll(seriesCtx, trendSyms)
@@ -111,24 +111,27 @@ func (d Deps) marketOverview(ctx context.Context) (marketOverviewOutput, error) 
 	if qr.err != nil {
 		return marketOverviewOutput{}, qr.err
 	}
-	if len(qr.quotes) == 0 {
+	b := qr.batch
+	if len(b.quotes) == 0 {
 		return marketOverviewOutput{}, errors.New("the data source returned no quote for any overview symbol; try again later")
 	}
 
-	bySymbol := make(map[string]market.Quote, len(qr.quotes))
-	for _, q := range qr.quotes {
+	bySymbol := make(map[string]market.Quote, len(b.quotes))
+	for _, q := range b.quotes {
 		bySymbol[normalizeSymbol(q.Symbol)] = q
 	}
 	out := marketOverviewOutput{
 		Rows:       make([]overviewRow, 0, len(overviewInstruments)),
-		Missing:    qr.missing,
+		Missing:    []string{},
 		Notes:      []string{"trend is a rule-based description of the recent daily price path (see get_etf_info for the reasons), not a prediction; quotes are delayed"},
+		Warnings:   b.warnings(),
 		Disclaimer: Disclaimer,
 	}
 	var latest time.Time
 	for _, inst := range overviewInstruments {
 		q, ok := bySymbol[inst.symbol]
 		if !ok {
+			out.Missing = append(out.Missing, inst.symbol)
 			continue
 		}
 		if q.AsOf.After(latest) {
@@ -143,7 +146,8 @@ func (d Deps) marketOverview(ctx context.Context) (marketOverviewOutput, error) 
 			ChangePct:     round2(q.ChangePct),
 			PreviousClose: round2(q.PreviousClose),
 			MarketState:   q.MarketState,
-			AsOf:          dataTimestamp(q.AsOf),
+			QuoteTime:     dataTimestamp(q.AsOf),
+			Stale:         b.isStale(inst.symbol),
 		}
 		if inst.trend {
 			out.Warnings = append(out.Warnings, overviewTrend(&row, series[inst.symbol], failed[inst.symbol])...)
@@ -153,9 +157,9 @@ func (d Deps) marketOverview(ctx context.Context) (marketOverviewOutput, error) 
 		}
 		out.Rows = append(out.Rows, row)
 	}
-	out.AsOf = dataTimestamp(latest)
-	if len(out.Missing) > 0 {
-		out.Warnings = append(out.Warnings, fmt.Sprintf("no quote for %s", strings.Join(out.Missing, ", ")))
+	out.LatestQuoteTime = dataTimestamp(latest)
+	if len(b.unknown) > 0 {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("no quote for %s: the provider does not know it", strings.Join(b.unknown, ", ")))
 	}
 	return out, nil
 }

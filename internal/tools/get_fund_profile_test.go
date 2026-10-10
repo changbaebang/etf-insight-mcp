@@ -3,6 +3,7 @@ package tools
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGetFundProfile(t *testing.T) {
@@ -76,6 +77,72 @@ func TestGetFundProfile(t *testing.T) {
 	for _, tt := range errs {
 		t.Run(tt.name, func(t *testing.T) {
 			callErr(t, sess, "get_fund_profile", tt.args, tt.want)
+		})
+	}
+}
+
+// TestGetFundProfileReviewFixes pins the caveats the review asked for:
+// net assets of a multi-class fund, a price history that does not start at
+// the inception date, and where the expense ratio comes from.
+func TestGetFundProfileReviewFixes(t *testing.T) {
+	sess, _, _ := newDataSession(t)
+
+	voo := callRaw(t, sess, "get_fund_profile", map[string]any{"symbol": "VOO"})
+	if !hasDataNote(rawStrings(voo["notes"]), "share classes") {
+		t.Errorf("VOO notes = %v, want net assets explained as the whole fund's", voo["notes"])
+	}
+	if d := schemaDescription(t, sess, "get_fund_profile", "net_assets"); !strings.Contains(d, "all share classes") {
+		t.Errorf("net_assets description = %q", d)
+	}
+	if d := schemaDescription(t, sess, "get_fund_profile", "expense_ratio_pct"); !strings.Contains(d, "annual report") {
+		t.Errorf("expense_ratio_pct description = %q, want its source named", d)
+	}
+
+	qqq := callRaw(t, sess, "get_fund_profile", map[string]any{"symbol": "QQQ"})
+	if qqq["price_history_from"] != "2021-01-04" {
+		t.Errorf("price_history_from = %v, want 2021-01-04", qqq["price_history_from"])
+	}
+	notes := rawStrings(qqq["notes"])
+	if !hasDataNote(notes, "2021-01-04") || !hasDataNote(notes, "2023-06-01") || !hasDataNote(notes, "predecessor") {
+		t.Errorf("QQQ notes = %v, want the history before inception explained", notes)
+	}
+}
+
+func TestInceptionNote(t *testing.T) {
+	day := func(s string) time.Time { return date(t, s) }
+	tests := []struct {
+		name                   string
+		inception, first, last string
+		want                   []string // substrings; none means no note
+		without                string   // a substring the note must not contain
+	}{
+		{name: "history before inception", inception: "2011-12-20", first: "2000-06-05", last: "2026-10-09",
+			want: []string{"2000-06-05, 11.5 years before the 2011-12-20 inception date", "predecessor", "start simulations on or after 2011-12-20"}},
+		{name: "inception near the end of the history", inception: "2026-10-02", first: "2021-06-14", last: "2026-10-09",
+			want: []string{"5.3 years before the 2026-10-02 inception date"}, without: "start simulations"},
+		{name: "history after inception", inception: "2010-09-07", first: "2021-01-04", last: "2023-12-29",
+			want: []string{"10.3 years after the 2010-09-07 inception date", "since 2021-01-04"}},
+		{name: "launch a few weeks apart", inception: "2020-01-02", first: "2020-02-12", last: "2023-12-29"},
+		{name: "unknown inception", inception: "", first: "2020-02-12", last: "2023-12-29"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var inception time.Time
+			if tt.inception != "" {
+				inception = day(tt.inception)
+			}
+			got := inceptionNote(inception, day(tt.first), day(tt.last))
+			if len(tt.want) == 0 && got != "" {
+				t.Errorf("note = %q, want none", got)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("note = %q, want it to contain %q", got, w)
+				}
+			}
+			if tt.without != "" && strings.Contains(got, tt.without) {
+				t.Errorf("note = %q, want no %q", got, tt.without)
+			}
 		})
 	}
 }

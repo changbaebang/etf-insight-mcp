@@ -147,8 +147,8 @@ func TestScreenUniverse(t *testing.T) {
 		if slices.Contains(got, "SSO") || analysisSkippedReason(out.Skipped, "SSO") != "" {
 			t.Errorf("leveraged SSO was screened")
 		}
-		if out.Matched+len(out.Skipped) != out.Screened {
-			t.Errorf("matched %d + skipped %d != screened %d", out.Matched, len(out.Skipped), out.Screened)
+		if out.Matched+out.SkippedCount != out.Screened || len(out.Skipped) != min(out.SkippedCount, screenMaxSkipped) {
+			t.Errorf("matched %d + skipped_count %d != screened %d, or %d listed", out.Matched, out.SkippedCount, out.Screened, len(out.Skipped))
 		}
 		if r := analysisSkippedReason(out.Skipped, "VTI"); !strings.Contains(r, "VTI is in the universe but the data source returned not found") {
 			t.Errorf("VTI skip reason = %q", r)

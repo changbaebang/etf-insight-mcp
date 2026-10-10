@@ -43,7 +43,7 @@ type reviewDCAPlanInput struct {
 	Amount             float64 `json:"amount" jsonschema:"USD per contribution before commissions, e.g. 5; must be > 0"`
 	Cadence            string  `json:"cadence,omitempty" jsonschema:"daily (default; 252 contributions a year), weekly (52) or monthly (12)"`
 	HorizonYears       float64 `json:"horizon_years,omitempty" jsonschema:"long-term horizon in years, a whole number of months from 0.25 to 40 (default 5)"`
-	ShortHorizonMonths int     `json:"short_horizon_months,omitempty" jsonschema:"short-term horizon in months, 1 to 60 (default 3)"`
+	ShortHorizonMonths int     `json:"short_horizon_months,omitempty" jsonschema:"short-term horizon in months, 1 to 60 and shorter than horizon_years (default 3)"`
 	costInput
 }
 
@@ -63,12 +63,12 @@ type reviewPlanOutput struct {
 }
 
 type reviewCostsOutput struct {
-	CommissionPerContribution             float64  `json:"commission_per_contribution" jsonschema:"commission_fixed + fee_rate × amount, USD"`
+	CommissionPerContribution             float64  `json:"commission_per_contribution" jsonschema:"commission_fixed + fee_rate × amount, USD, to 4 decimals so that sub-cent commissions reconcile with the other figures"`
 	CommissionPctOfContribution           float64  `json:"commission_pct_of_contribution" jsonschema:"commission_per_contribution as a percentage of amount"`
 	CommissionPerYear                     float64  `json:"commission_per_year" jsonschema:"commission_per_contribution × contributions_per_year, USD"`
 	ExpenseRatioPct                       *float64 `json:"expense_ratio_pct" jsonschema:"the fund's annual expense ratio from the fund data source, percent with 4 decimals (0.0945 = 0.0945%); null when unavailable, see notes"`
-	ExpenseCostPerYearOnProjectedHoldings *float64 `json:"expense_cost_per_year_on_projected_holdings" jsonschema:"expense ratio × annual_outlay × horizon_years / 2, USD a year: the ratio charged on the average amount contributed over the horizon, ignoring price changes (a plain approximation); null without an expense ratio"`
-	TotalCostPctOfOutlayYear1             float64  `json:"total_cost_pct_of_outlay_year1" jsonschema:"(commission_per_year + expense ratio × annual_outlay / 2) / annual_outlay × 100: first-year commissions plus the expense ratio on the first year's average holdings, as a percentage of the first year's outlay; commissions only when the expense ratio is unavailable"`
+	ExpenseCostPerYearOnProjectedHoldings *float64 `json:"expense_cost_per_year_on_projected_holdings" jsonschema:"expense ratio × (annual_outlay − commission_per_year) × horizon_years / 2, USD a year: the ratio charged on the average amount invested in the fund over the horizon (commissions never buy shares), ignoring price changes (a plain approximation); null without an expense ratio"`
+	TotalCostPctOfOutlayYear1             float64  `json:"total_cost_pct_of_outlay_year1" jsonschema:"(commission_per_year + expense ratio × (annual_outlay − commission_per_year) / 2) / annual_outlay × 100: first-year commissions plus the expense ratio on the first year's average holdings, as a percentage of the first year's outlay; commissions only when the expense ratio is unavailable"`
 	Notes                                 []string `json:"notes" jsonschema:"the formulas behind these figures and why a figure is missing"`
 }
 
@@ -77,7 +77,7 @@ type reviewHistoryOutput struct {
 	FirstDate                         string         `json:"first_date"`
 	Windows                           []windowOutput `json:"windows" jsonschema:"trailing total returns with dividends reinvested, 1m to 10y and max, as get_etf_info reports them"`
 	TTMDividendYieldPct               float64        `json:"ttm_dividend_yield_pct"`
-	ProjectedAnnualDividendsAtHorizon float64        `json:"projected_annual_dividends_at_horizon" jsonschema:"ttm dividend yield × annual_outlay × horizon_years, USD a year: what the amount contributed by the horizon would pay at today's trailing yield, ignoring price changes and dividend growth (an approximation)"`
+	ProjectedAnnualDividendsAtHorizon float64        `json:"projected_annual_dividends_at_horizon" jsonschema:"ttm dividend yield × (annual_outlay − commission_per_year) × horizon_years, USD a year: what the money invested in the fund by the horizon, net of commissions, would pay at today's trailing yield, ignoring price changes and dividend growth (an approximation)"`
 	Volatility1YPct                   float64        `json:"volatility_1y_pct"`
 	MaxDrawdownAllPct                 float64        `json:"max_drawdown_all_pct" jsonschema:"deepest peak-to-trough fall of the adjusted price over the whole history"`
 }
@@ -86,13 +86,21 @@ type reviewHistoryOutput struct {
 // sentence.
 type reviewRollingOutput struct {
 	rollingStatsOutput
-	Summary string `json:"summary" jsonschema:"the loss frequency in one sentence"`
+	BeforeCommissions *reviewGrossOutput `json:"before_commissions,omitempty" jsonschema:"the same windows with fee_rate and commission_fixed set to 0, which shows the fund's own result apart from what the commissions cost; omitted when the plan pays no commission"`
+	Summary           string             `json:"summary" jsonschema:"the loss frequency in one sentence, saying how far overlapping windows are independent and what the result was before commissions"`
+}
+
+// reviewGrossOutput summarises the rolling windows of a plan without
+// commissions.
+type reviewGrossOutput struct {
+	ProbLossPct     float64 `json:"prob_loss_pct" jsonschema:"share of windows that ended below the amount invested without commissions, percent"`
+	MedianReturnPct float64 `json:"median_return_pct" jsonschema:"median window return without commissions, percent"`
 }
 
 type reviewShortTermOutput struct {
 	Months  int                  `json:"months"`
 	Trend   trendOutput          `json:"trend" jsonschema:"rule-based reading of the recent price path (50/200-day averages, momentum); a description, not a prediction"`
-	Rolling *reviewRollingOutput `json:"rolling" jsonschema:"the plan over every historical window of months months, one starting every month; null when the history is too short (see notes)"`
+	Rolling *reviewRollingOutput `json:"rolling" jsonschema:"the plan over every historical window of months months, one starting every month, so neighbouring windows overlap; null when the history is too short (see notes)"`
 	Notes   []string             `json:"notes,omitempty"`
 }
 
@@ -110,11 +118,12 @@ type reviewMonteCarloOutput struct {
 	HistoricalVolatilityPct   float64            `json:"historical_volatility_pct"`
 	LookbackFrom              string             `json:"lookback_from"`
 	LookbackTo                string             `json:"lookback_to"`
+	HistoryYears              float64            `json:"history_years" jsonschema:"length of the resampled history, lookback_from to lookback_to, in years; warnings flag it when it is shorter than the horizon or than 5 years"`
 	Assumptions               []string           `json:"assumptions"`
 }
 
 type reviewCostDragOutput struct {
-	AssumedGrowthPct    float64 `json:"assumed_growth_pct" jsonschema:"gross annual growth the arithmetic assumes: monte_carlo's historical_annual_return_pct, or 0 when monte_carlo is unavailable"`
+	AssumedGrowthPct    float64 `json:"assumed_growth_pct" jsonschema:"annual growth before any expense ratio that the arithmetic assumes: monte_carlo's historical_annual_return_pct r, which is measured on adjusted closes and so already net of the fund's own expense ratio, with that ratio added back, (1 + r) / (1 − expense ratio) − 1; r itself when the expense ratio is unavailable, 0 when monte_carlo is unavailable"`
 	NetInvested         float64 `json:"net_invested" jsonschema:"(annual_outlay − commission_per_year) × horizon_years, USD"`
 	LowExpenseRatioPct  float64 `json:"low_expense_ratio_pct"`
 	HighExpenseRatioPct float64 `json:"high_expense_ratio_pct"`
@@ -125,7 +134,7 @@ type reviewCostDragOutput struct {
 
 type reviewLongTermOutput struct {
 	Years        float64                 `json:"years"`
-	Rolling      *reviewRollingOutput    `json:"rolling" jsonschema:"the plan over every historical window of years, one starting every 12 months (every month when that gives fewer than 10 windows); null when the history is too short (see notes)"`
+	Rolling      *reviewRollingOutput    `json:"rolling" jsonschema:"the plan over every historical window of years, one starting every 12 months (every month when that gives fewer than 10 windows), so neighbouring windows overlap; null when the history is too short (see notes)"`
 	MonteCarlo   *reviewMonteCarloOutput `json:"monte_carlo" jsonschema:"block-bootstrap projection of the same plan over years, 2000 paths, seed 42 (as forecast_dca computes it); null when it cannot run (see notes)"`
 	CostDrag     reviewCostDragOutput    `json:"cost_drag" jsonschema:"what a 0.20% instead of a 0.03% expense ratio costs over years on this outlay"`
 	CostDragNote string                  `json:"cost_drag_note"`
@@ -147,7 +156,7 @@ func (d Deps) registerReviewDCAPlan(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "review_dca_plan",
 		Title:       "Review DCA plan",
-		Description: "Reviews a recurring purchase plan of ONE ETF in USD, typically a small one such as 5 USD every trading day with a 0.99 USD commission, and lays out the facts in one call. plan: contributions per year (252 daily, 52 weekly, 12 monthly) and annual outlay. costs: commission per purchase, as a percentage of each purchase and per year, the fund's expense ratio (from the fund data source; null when unavailable) with its approximate yearly cost, and the total first-year cost as a percentage of the outlay, with the formulas. history: trailing returns, trailing-12-month dividend yield and the yearly dividends the horizon's contributions would earn at it, 1-year volatility, deepest drawdown. short_term: the current trend reading and how often a plan of short_horizon_months ended below cost across every historical start month. long_term: the same over horizon_years from real history, a 2000-path block-bootstrap projection (seed 42) of final value and return, and the arithmetic cost of a 0.20% versus a 0.03% expense ratio. observations: plain factual sentences. It never recommends; to look at cheaper or similar funds call find_alternatives. USD only, no portfolios: for KRW or several ETFs use simulate_rolling_dca and forecast_dca. Defaults: cadence daily, horizon_years 5, short_horizon_months 3, commission_fixed 0, fee_rate 0, reinvest_dividends true. Percentages are plain numbers (7.5 = 7.5%).",
+		Description: "Reviews a recurring purchase plan of ONE ETF in USD, typically a small one such as 5 USD every trading day with a 0.99 USD commission, and lays out the facts in one call. plan: contributions per year (252 daily, 52 weekly, 12 monthly) and annual outlay. costs: commission per purchase, as a percentage of each purchase and per year, the fund's expense ratio (from the fund data source; null when unavailable) with its approximate yearly cost, and the total first-year cost as a percentage of the outlay, with the formulas. history: trailing returns, trailing-12-month (52-week) dividend yield and the yearly dividends the horizon's net contributions would earn at it, 1-year volatility, deepest drawdown. short_term: the current trend reading and how often a plan of short_horizon_months ended below cost across every historical start month, also before commissions so their share is visible. long_term: the same over horizon_years from real history, a 2000-path block-bootstrap projection (seed 42) of final value and return (warned when the history is shorter than the horizon or than 5 years), and the arithmetic cost of a 0.20% versus a 0.03% expense ratio. observations: plain factual sentences. It never recommends; to look at cheaper or similar funds call find_alternatives. USD only, a fund quoted in USD, no portfolios: for KRW or several ETFs use simulate_rolling_dca and forecast_dca. Defaults: cadence daily, horizon_years 5, short_horizon_months 3, commission_fixed 0, fee_rate 0, reinvest_dividends true. Percentages are plain numbers (7.5 = 7.5%).",
 		Annotations: readOnly("Review DCA plan", true),
 		InputSchema: inputSchema[reviewDCAPlanInput](schemaTweaks{
 			defaults: costDefaults(map[string]any{"cadence": "daily", "horizon_years": defaultReviewHorizonYears, "short_horizon_months": defaultReviewShortMonths}),
@@ -181,6 +190,7 @@ type reviewFigures struct {
 	outlay          float64 // amount × perYear
 	commission      float64 // per contribution
 	commissionYear  float64
+	netOutlay       float64 // outlay − commissionYear: what buys shares in a year
 	horizonYears    float64
 	horizonMonths   int
 	shortMonths     int
@@ -200,6 +210,7 @@ func (d Deps) reviewDCAPlan(ctx context.Context, in reviewDCAPlanInput) (reviewD
 		return reviewDCAPlanOutput{}, err
 	}
 	series := simIn.Series[f.sym]
+	fullYear := hasTrailingYear(series, time.Time{})
 	summary, err := analytics.Summarize(series, time.Time{})
 	if err != nil {
 		return reviewDCAPlanOutput{}, userError(err)
@@ -217,11 +228,15 @@ func (d Deps) reviewDCAPlan(ctx context.Context, in reviewDCAPlanInput) (reviewD
 		Disclaimer: Disclaimer,
 	}
 	out.ShortTerm = reviewShortTerm(f, plan, simIn, trend)
-	out.LongTerm = reviewLongTerm(f, plan, simIn, in)
-	out.Observations = reviewObservations(f, out, summary)
-	out.Warnings = d.planStaleWarnings(plan)
-	if c := series.Meta.Currency; c != "" && !strings.EqualFold(c, sim.CurrencyUSD) {
-		out.Warnings = append(out.Warnings, fmt.Sprintf("%s is quoted in %s; review_dca_plan treats its prices as USD", f.sym, c))
+	var historyWarning string
+	out.LongTerm, historyWarning = reviewLongTerm(ctx, f, plan, simIn, in)
+	out.Observations = reviewObservations(f, out, summary, fullYear)
+	out.Warnings = d.planWarnings(plan, simIn)
+	if !fullYear {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("%s has less than 52 weeks of history (since %s), so ttm_dividend_yield_pct, projected_annual_dividends_at_horizon and volatility_1y_pct cover only that period, not a full year", f.sym, out.History.FirstDate))
+	}
+	if historyWarning != "" {
+		out.Warnings = append(out.Warnings, historyWarning)
 	}
 	return out, nil
 }
@@ -255,25 +270,32 @@ func (in reviewDCAPlanInput) figures() (reviewFigures, sim.Plan, error) {
 	if short < 1 || short > maxReviewShortMonths {
 		return reviewFigures{}, sim.Plan{}, fmt.Errorf("short_horizon_months must be between 1 and %d, got %d", maxReviewShortMonths, in.ShortHorizonMonths)
 	}
-	if err := in.validate(in.Amount); err != nil {
+	if short >= horizonMonths {
+		return reviewFigures{}, sim.Plan{}, fmt.Errorf("short_horizon_months %d must be shorter than the long-term horizon, horizon_years %v (%d months); lower short_horizon_months or raise horizon_years", short, horizon, horizonMonths)
+	}
+	allocs := []sim.Allocation{{Symbol: sym, Weight: 1}}
+	if err := in.validate(in.Amount, allocs); err != nil {
 		return reviewFigures{}, sim.Plan{}, err
 	}
 	perYear := contributionsPerYear(cadence)
 	commission := in.CommissionFixed + in.FeeRate*in.Amount
+	outlay := in.Amount * float64(perYear)
+	commissionYear := commission * float64(perYear)
 	f := reviewFigures{
 		sym:            sym,
 		amount:         in.Amount,
 		cadence:        cadence,
 		perYear:        perYear,
-		outlay:         in.Amount * float64(perYear),
+		outlay:         outlay,
 		commission:     commission,
-		commissionYear: commission * float64(perYear),
+		commissionYear: commissionYear,
+		netOutlay:      outlay - commissionYear,
 		horizonYears:   horizon,
 		horizonMonths:  horizonMonths,
 		shortMonths:    short,
 	}
 	plan := sim.Plan{
-		Allocations: []sim.Allocation{{Symbol: sym, Weight: 1}},
+		Allocations: allocs,
 		Amount:      in.Amount,
 		Currency:    sim.CurrencyUSD,
 		Cadence:     cadence,
@@ -341,7 +363,7 @@ func reviewPlan(f reviewFigures, in reviewDCAPlanInput, series *market.Series, p
 // reviewCosts computes the cost section.
 func reviewCosts(f reviewFigures) reviewCostsOutput {
 	out := reviewCostsOutput{
-		CommissionPerContribution:   round2(f.commission),
+		CommissionPerContribution:   round4(f.commission),
 		CommissionPctOfContribution: pct(f.commission / f.amount),
 		CommissionPerYear:           round2(f.commissionYear),
 		Notes: []string{
@@ -351,11 +373,11 @@ func reviewCosts(f reviewFigures) reviewCostsOutput {
 	yearOne := f.commissionYear
 	if er := f.expenseRatio; er != nil {
 		out.ExpenseRatioPct = ptr(round4(*er * 100))
-		out.ExpenseCostPerYearOnProjectedHoldings = ptr(round2(*er * f.outlay * f.horizonYears / 2))
-		yearOne += *er * f.outlay / 2
+		out.ExpenseCostPerYearOnProjectedHoldings = ptr(round2(*er * f.netOutlay * f.horizonYears / 2))
+		yearOne += *er * f.netOutlay / 2
 		out.Notes = append(out.Notes,
-			"expense_cost_per_year_on_projected_holdings = expense_ratio × annual_outlay × horizon_years / 2: the ratio charged on the average amount contributed over the horizon, ignoring price changes (a plain approximation)",
-			"total_cost_pct_of_outlay_year1 = (commission_per_year + expense_ratio × annual_outlay / 2) / annual_outlay × 100")
+			"expense_cost_per_year_on_projected_holdings = expense_ratio × (annual_outlay − commission_per_year) × horizon_years / 2: the ratio charged on the average amount invested in the fund over the horizon, net of commissions because they never buy shares, ignoring price changes (a plain approximation)",
+			"total_cost_pct_of_outlay_year1 = (commission_per_year + expense_ratio × (annual_outlay − commission_per_year) / 2) / annual_outlay × 100")
 	} else {
 		out.Notes = append(out.Notes,
 			"expense_ratio_pct is null: "+f.expenseRatioWhy,
@@ -372,7 +394,7 @@ func reviewHistory(f reviewFigures, s analytics.Summary) reviewHistoryOutput {
 		FirstDate:                         formatDate(s.FirstDate),
 		Windows:                           toSummaryOutput(s).Windows,
 		TTMDividendYieldPct:               pct(s.TTMDividendYield),
-		ProjectedAnnualDividendsAtHorizon: round2(s.TTMDividendYield * f.outlay * f.horizonYears),
+		ProjectedAnnualDividendsAtHorizon: round2(s.TTMDividendYield * f.netOutlay * f.horizonYears),
 		Volatility1YPct:                   pct(s.Volatility1Y),
 		MaxDrawdownAllPct:                 pct(s.MaxDrawdownAll),
 	}
@@ -391,8 +413,9 @@ func reviewShortTerm(f reviewFigures, plan sim.Plan, in sim.Input, trend analyti
 }
 
 // reviewLongTerm runs the long rolling windows, the Monte Carlo and the
-// cost drag arithmetic.
-func reviewLongTerm(f reviewFigures, plan sim.Plan, simIn sim.Input, in reviewDCAPlanInput) reviewLongTermOutput {
+// cost drag arithmetic. The second value is the Monte Carlo's short-history
+// warning (see shortHistoryWarning), "" when there is none.
+func reviewLongTerm(ctx context.Context, f reviewFigures, plan sim.Plan, simIn sim.Input, in reviewDCAPlanInput) (reviewLongTermOutput, string) {
 	out := reviewLongTermOutput{Years: f.horizonYears}
 
 	rolling, res, err := runReviewRolling(plan, simIn, f.horizonMonths, reviewLongStep)
@@ -410,7 +433,7 @@ func reviewLongTerm(f reviewFigures, plan sim.Plan, simIn sim.Input, in reviewDC
 		switch {
 		case merr == nil:
 			rolling, err = monthly, nil
-			out.Notes = append(out.Notes, fmt.Sprintf("rolling starts a window every month because starting one every %d months %s; overlapping windows share most of their days, so they are not independent outcomes", reviewLongStep, why))
+			out.Notes = append(out.Notes, fmt.Sprintf("rolling starts a window every month because starting one every %d months %s", reviewLongStep, why))
 		case err != nil:
 			err = merr
 		}
@@ -421,17 +444,26 @@ func reviewLongTerm(f reviewFigures, plan sim.Plan, simIn sim.Input, in reviewDC
 		out.Rolling = rolling
 	}
 
-	mc, notes := reviewMonteCarlo(f, simIn, in)
+	mc, notes, historyWarning := reviewMonteCarlo(ctx, f, simIn, in)
 	out.MonteCarlo = mc
 	out.Notes = append(out.Notes, notes...)
 
 	growth, source := 0.0, "no growth, because monte_carlo is unavailable"
-	if mc != nil {
+	switch {
+	case mc == nil:
+	case f.expenseRatio != nil:
+		// The historical return comes from adjusted closes, which the
+		// fund's own expense ratio has already reduced; adding it back
+		// keeps the hypothetical ratios from being charged on top of it.
+		er := *f.expenseRatio
+		growth = (1+mc.HistoricalAnnualReturnPct/100)/(1-er) - 1
+		source = fmt.Sprintf("the historical annual return monte_carlo is built on, with the fund's own %s%% expense ratio added back", obsNum(er*100))
+	default:
 		growth = mc.HistoricalAnnualReturnPct / 100
-		source = "the historical annual return monte_carlo is built on"
+		source = "the historical annual return monte_carlo is built on, which is already net of the fund's own expense ratio (unavailable here, so not added back)"
 	}
 	out.CostDrag, out.CostDragNote = reviewCostDrag(f, growth, source)
-	return out
+	return out, historyWarning
 }
 
 // reviewRollingNote explains a rolling section left null; field names the
@@ -446,6 +478,9 @@ func reviewRollingNote(err error, field string) string {
 
 // runReviewRolling runs the plan over every window of months months, one
 // starting every step months, and maps it with a one-sentence summary.
+// When the plan pays commissions the windows are run a second time
+// without them, so the summary can say how much of the result is the
+// commissions and how much the fund.
 func runReviewRolling(plan sim.Plan, in sim.Input, months, step int) (*reviewRollingOutput, *sim.RollingResult, error) {
 	res, err := sim.RunRolling(plan, in, sim.RollingConfig{DurationYears: float64(months) / 12, StepMonths: step})
 	if err != nil {
@@ -455,22 +490,64 @@ func runReviewRolling(plan sim.Plan, in sim.Input, months, step int) (*reviewRol
 	if err != nil {
 		return nil, nil, err
 	}
-	spacing := ""
-	if step != 1 {
-		spacing = fmt.Sprintf(" (one starting every %d months)", step)
+	out := &reviewRollingOutput{rollingStatsOutput: stats}
+	out.Summary = fmt.Sprintf("over %d historical %d-month windows%s the plan ended below cost %s%% of the time",
+		stats.WindowsCount, months, windowSpacing(stats.WindowsCount, months, step), obsNum(stats.ProbLossPct))
+	if gross := grossRolling(plan, in, months, step); gross != nil {
+		out.BeforeCommissions = gross
+		// The fixed commission is charged once per ETF purchased.
+		share := (plan.FeeRate*plan.Amount + plan.FeeFixed*float64(len(plan.Allocations))) / plan.Amount
+		out.Summary += fmt.Sprintf(" (%s%% before commissions, which take %s%% of every purchase)", obsNum(gross.ProbLossPct), obsNum(pct(share)))
 	}
-	summary := fmt.Sprintf("over %d historical %d-month windows%s the plan ended below cost %s%% of the time",
-		stats.WindowsCount, months, spacing, obsNum(stats.ProbLossPct))
-	return &reviewRollingOutput{rollingStatsOutput: stats, Summary: summary}, res, nil
+	return out, res, nil
+}
+
+// windowSpacing describes for the summary sentence how the windows are
+// placed. Windows that start less than their length apart overlap and are
+// not independent outcomes, so it then also says how many of them cover
+// separate periods: taking every k-th window, k = months / step rounded
+// up, is the largest set of windows that do not overlap.
+func windowSpacing(count, months, step int) string {
+	every := "every month"
+	if step != 1 {
+		every = fmt.Sprintf("every %d months", step)
+	}
+	if step >= months {
+		// Windows at least their own length apart do not overlap.
+		if step == 1 {
+			return ""
+		}
+		return fmt.Sprintf(" (one starting %s)", every)
+	}
+	k := (months + step - 1) / step
+	separate := (count-1)/k + 1
+	return fmt.Sprintf(" (one starting %s; they overlap, so only %d of them cover separate periods)", every, separate)
+}
+
+// grossRolling runs the same windows as plan with fee_rate and
+// commission_fixed set to 0. It returns nil when the plan pays no
+// commission, or when the run fails, in which case the summary simply
+// leaves the comparison out.
+func grossRolling(plan sim.Plan, in sim.Input, months, step int) *reviewGrossOutput {
+	if plan.FeeRate == 0 && plan.FeeFixed == 0 {
+		return nil
+	}
+	plan.FeeRate, plan.FeeFixed = 0, 0
+	res, err := sim.RunRolling(plan, in, sim.RollingConfig{DurationYears: float64(months) / 12, StepMonths: step})
+	if err != nil {
+		return nil
+	}
+	return &reviewGrossOutput{ProbLossPct: pct(res.ProbLoss), MedianReturnPct: round2(res.ReturnPctPercentiles["p50"])}
 }
 
 // reviewMonteCarlo projects the plan with the block bootstrap. The fixed
 // commission folds into the fee rate exactly, because a USD plan's amount
 // is constant: amount × (1 − fee_rate) − commission_fixed = amount × (1 −
-// fee_rate − commission_fixed / amount).
-func reviewMonteCarlo(f reviewFigures, simIn sim.Input, in reviewDCAPlanInput) (*reviewMonteCarloOutput, []string) {
+// fee_rate − commission_fixed / amount). The third value is the
+// short-history warning, "" when the history is long enough.
+func reviewMonteCarlo(ctx context.Context, f reviewFigures, simIn sim.Input, in reviewDCAPlanInput) (*reviewMonteCarloOutput, []string, string) {
 	feeRate := in.FeeRate + in.CommissionFixed/in.Amount
-	res, err := analytics.MonteCarlo(analytics.MCPlan{
+	res, err := analytics.MonteCarloContext(ctx, analytics.MCPlan{
 		Symbols:      []string{f.sym},
 		Weights:      []float64{1},
 		Amount:       f.amount,
@@ -480,11 +557,11 @@ func reviewMonteCarlo(f reviewFigures, simIn sim.Input, in reviewDCAPlanInput) (
 		FeeRate:      feeRate,
 	}, analytics.MCConfig{Simulations: reviewSimulations, Seed: reviewSeed}, analytics.MCInput{Series: simIn.Series})
 	if err != nil {
-		return nil, []string{"monte_carlo is null: " + userError(err).Error()}
+		return nil, []string{"monte_carlo is null: " + userError(err).Error()}, ""
 	}
 	values := append([]float64{res.Invested, res.MeanFinal, res.HistoricalAnnualReturn}, mapValues(res.Percentiles)...)
 	if err := checkFinite("monte_carlo", values...); err != nil {
-		return nil, []string{"monte_carlo is null: the projection overflowed"}
+		return nil, []string{"monte_carlo is null: the projection overflowed"}, ""
 	}
 	var notes []string
 	if in.CommissionFixed > 0 {
@@ -507,8 +584,9 @@ func reviewMonteCarlo(f reviewFigures, simIn sim.Input, in reviewDCAPlanInput) (
 		HistoricalVolatilityPct:   pct(res.HistoricalVolatility),
 		LookbackFrom:              formatDate(res.LookbackFrom),
 		LookbackTo:                formatDate(res.LookbackTo),
+		HistoryYears:              round2(resampledYears(res)),
 		Assumptions:               append([]string{}, res.Assumptions...),
-	}, notes
+	}, notes, shortHistoryWarning(res)
 }
 
 // reviewCostDrag compares the low and the high expense ratio on the same
@@ -535,19 +613,21 @@ func reviewCostDrag(f reviewFigures, growth float64, source string) (reviewCostD
 		FinalValueHigh:      high,
 		Difference:          round2(low - high),
 	}
-	note := fmt.Sprintf("Putting %s USD a year after commissions into the fund for %s (%s USD in all) and assuming %s%% gross growth a year (%s), a 0.03%% expense ratio ends at about %s USD and a 0.20%% one at about %s USD, %s USD apart. Arithmetic: a twelfth of the yearly amount is added every month and each month's balance is multiplied by ((1 + growth) × (1 − expense ratio))^(1/12).",
+	note := fmt.Sprintf("Putting %s USD a year after commissions into the fund for %s (%s USD in all) and assuming %s%% growth a year before expense ratios (%s), a 0.03%% expense ratio ends at about %s USD and a 0.20%% one at about %s USD, %s USD apart. Arithmetic: a twelfth of the yearly amount is added every month and each month's balance is multiplied by ((1 + growth) × (1 − expense ratio))^(1/12).",
 		obsMoney(monthly*12), obsYears(f.horizonYears), obsMoney(out.NetInvested), obsNum(out.AssumedGrowthPct), source,
 		obsMoney(low), obsMoney(high), obsMoney(out.Difference))
 	return out, note
 }
 
 // reviewObservations turns the sections into plain factual sentences and
-// closes with the disclaimer. Nothing here recommends anything.
-func reviewObservations(f reviewFigures, out reviewDCAPlanOutput, s analytics.Summary) []string {
+// closes with the disclaimer. fullYear is false when the history is
+// shorter than 52 weeks, which the trailing-year sentences then say.
+// Nothing here recommends anything.
+func reviewObservations(f reviewFigures, out reviewDCAPlanOutput, s analytics.Summary, fullYear bool) []string {
 	var obs []string
 	if f.commission > 0 {
 		obs = append(obs, fmt.Sprintf("A %s USD commission on a %s USD contribution is %s%% of each purchase; over a year that is %s USD on %s USD invested.",
-			obsMoney(f.commission), obsMoney(f.amount), obsNum(out.Costs.CommissionPctOfContribution), obsMoney(f.commissionYear), obsMoney(f.outlay)))
+			obsCommission(f.commission), obsMoney(f.amount), obsNum(out.Costs.CommissionPctOfContribution), obsMoney(f.commissionYear), obsMoney(f.outlay)))
 	} else {
 		obs = append(obs, fmt.Sprintf("No commission was given (commission_fixed and fee_rate are 0), so all %s USD a year buys shares.", obsMoney(f.outlay)))
 	}
@@ -559,9 +639,12 @@ func reviewObservations(f reviewFigures, out reviewDCAPlanOutput, s analytics.Su
 	}
 	obs = append(obs, fmt.Sprintf("First-year costs come to %s%% of the %s USD outlay.", obsNum(out.Costs.TotalCostPctOfOutlayYear1), obsMoney(f.outlay)))
 
+	if !fullYear {
+		obs = append(obs, fmt.Sprintf("The fund has less than 52 weeks of history (since %s), so the trailing-12-month and 1-year figures cover only that period.", out.History.FirstDate))
+	}
 	if s.TTMDividendYield > 0 {
-		obs = append(obs, fmt.Sprintf("Trailing-12-month dividend yield %s%%: the %s USD contributed over %s would pay about %s USD a year at that yield (ignoring price changes and dividend growth).",
-			obsNum(out.History.TTMDividendYieldPct), obsMoney(f.outlay*f.horizonYears), obsYears(f.horizonYears), obsMoney(out.History.ProjectedAnnualDividendsAtHorizon)))
+		obs = append(obs, fmt.Sprintf("Trailing-12-month dividend yield %s%%: the %s USD invested in the fund over %s (contributions less commissions) would pay about %s USD a year at that yield (ignoring price changes and dividend growth).",
+			obsNum(out.History.TTMDividendYieldPct), obsMoney(f.netOutlay*f.horizonYears), obsYears(f.horizonYears), obsMoney(out.History.ProjectedAnnualDividendsAtHorizon)))
 	} else {
 		obs = append(obs, "No dividends were paid in the trailing 12 months.")
 	}
@@ -581,12 +664,16 @@ func reviewObservations(f reviewFigures, out reviewDCAPlanOutput, s analytics.Su
 	obs = append(obs, rollingObservation(out.ShortTerm.Rolling, fmt.Sprintf("%d-month", f.shortMonths)))
 	obs = append(obs, rollingObservation(out.LongTerm.Rolling, fmt.Sprintf("%d-month", f.horizonMonths)))
 	if mc := out.LongTerm.MonteCarlo; mc != nil {
-		obs = append(obs, fmt.Sprintf("Across %d resampled %s-year paths (seed %d) the median final value is %s USD on %s USD invested (p5 %s USD, p95 %s USD); %s%% of paths end below cost.",
+		caveat := ""
+		if shortHistory(mc.HistoryYears, f.horizonYears) {
+			caveat = fmt.Sprintf("; these paths are resampled from only %.1f years of history", mc.HistoryYears)
+		}
+		obs = append(obs, fmt.Sprintf("Across %d resampled %s-year paths (seed %d) the median final value is %s USD on %s USD invested (p5 %s USD, p95 %s USD); %s%% of paths end below cost%s.",
 			mc.Simulations, obsNum(f.horizonYears), mc.Seed, obsMoney(mc.Percentiles["p50"]), obsMoney(mc.Invested),
-			obsMoney(mc.Percentiles["p5"]), obsMoney(mc.Percentiles["p95"]), obsNum(mc.ProbLossPct)))
+			obsMoney(mc.Percentiles["p5"]), obsMoney(mc.Percentiles["p95"]), obsNum(mc.ProbLossPct), caveat))
 	}
 	cd := out.LongTerm.CostDrag
-	obs = append(obs, fmt.Sprintf("Over %s, a 0.20%% expense ratio instead of 0.03%% leaves about %s USD less on this outlay at %s%% gross growth a year.",
+	obs = append(obs, fmt.Sprintf("Over %s, a 0.20%% expense ratio instead of 0.03%% leaves about %s USD less on this outlay at %s%% growth a year before expense ratios.",
 		obsYears(f.horizonYears), obsMoney(cd.Difference), obsNum(cd.AssumedGrowthPct)))
 	return append(obs, Disclaimer)
 }
@@ -597,8 +684,12 @@ func rollingObservation(r *reviewRollingOutput, length string) string {
 		return fmt.Sprintf("The history is too short for %s rolling windows.", length)
 	}
 	s := strings.ToUpper(r.Summary[:1]) + r.Summary[1:]
-	return fmt.Sprintf("%s; the median window returned %s%% and the worst %s%% (%s to %s).",
-		s, obsNum(r.ReturnPctPercentiles["p50"]), obsNum(r.Worst.ReturnPct), r.Worst.Start, r.Worst.End)
+	median := obsNum(r.ReturnPctPercentiles["p50"]) + "%"
+	if g := r.BeforeCommissions; g != nil {
+		median += fmt.Sprintf(" (%s%% before commissions)", obsNum(g.MedianReturnPct))
+	}
+	return fmt.Sprintf("%s; the median window returned %s and the worst %s%% (%s to %s).",
+		s, median, obsNum(r.Worst.ReturnPct), r.Worst.Start, r.Worst.End)
 }
 
 // obsNum renders a rounded number for a sentence without trailing zeros:
@@ -609,6 +700,17 @@ func obsNum(x float64) string {
 		v = 0 // no negative zero
 	}
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// obsCommission renders a per-purchase commission for a sentence: like
+// obsMoney, but with up to four decimals below a cent's precision, so a
+// 0.25% commission on 5 USD reads 0.0125 rather than 0.01 and reconciles
+// with the percentage and the yearly total next to it.
+func obsCommission(x float64) string {
+	if round4(x) == round2(x) {
+		return obsMoney(x)
+	}
+	return obsNum(x)
 }
 
 // obsYears renders a horizon for a sentence: "1 year", "2.5 years".

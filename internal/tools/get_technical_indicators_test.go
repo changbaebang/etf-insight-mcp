@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/changbaebang/etf-insight-mcp/internal/analytics"
 	"github.com/changbaebang/etf-insight-mcp/internal/market"
+	"github.com/changbaebang/etf-insight-mcp/internal/universe"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -46,7 +48,7 @@ func TestAnalysisToolsAreListed(t *testing.T) {
 	for name, want := range map[string][]string{
 		"get_technical_indicators": {"not predictions", "RSI", "MACD", "Bollinger"},
 		"compare_etfs":             {"default SPY", "common_range", "null when unavailable"},
-		"screen_universe":          {"COLD START", "refresh_prices", "category", "max 125", "not a recommendation"},
+		"screen_universe":          {"COLD START", "refresh_prices", "category", fmt.Sprintf("max %d", len(universe.All())), "not a recommendation"},
 		"find_alternatives":        {"not advice", "min_correlation", "already net of expense ratios", "skipped"},
 	} {
 		for _, w := range want {
@@ -99,10 +101,11 @@ func TestGetTechnicalIndicators(t *testing.T) {
 			t.Errorf("symbol/as_of/bars/currency = %s/%s/%d/%s", out.Symbol, out.AsOf, out.Bars, out.Currency)
 		}
 		checks := []struct {
-			name      string
-			got, want float64
+			name string
+			got  *float64
+			want float64
 		}{
-			{"close", out.Close, round2(want.Close)},
+			{"close", &out.Close, round2(want.Close)},
 			{"rsi_14", out.RSI14, round2(want.RSI14)},
 			{"macd", out.MACD, round4(want.MACD)},
 			{"macd_signal", out.MACDSignal, round4(want.MACDSignal)},
@@ -119,18 +122,25 @@ func TestGetTechnicalIndicators(t *testing.T) {
 			{"ema_26", out.EMA26, round2(want.EMA26)},
 		}
 		for _, c := range checks {
-			if c.got != c.want {
-				t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
+			if c.got == nil {
+				t.Errorf("%s is null on a 780-bar series", c.name)
+				continue
 			}
-			if c.got == 0 && c.name != "macd_hist" {
+			if *c.got != c.want {
+				t.Errorf("%s = %v, want %v", c.name, *c.got, c.want)
+			}
+			if *c.got == 0 && c.name != "macd_hist" {
 				t.Errorf("%s is 0 on a 780-bar series", c.name)
 			}
 		}
-		if math.Abs(out.MACDHist-(out.MACD-out.MACDSignal)) > 0.0002 {
-			t.Errorf("macd_hist %v != macd %v - macd_signal %v", out.MACDHist, out.MACD, out.MACDSignal)
+		if t.Failed() {
+			return
 		}
-		if out.BollingerLower >= out.BollingerMiddle || out.BollingerMiddle >= out.BollingerUpper {
-			t.Errorf("bands out of order: %v %v %v", out.BollingerLower, out.BollingerMiddle, out.BollingerUpper)
+		if math.Abs(*out.MACDHist-(*out.MACD-*out.MACDSignal)) > 0.0002 {
+			t.Errorf("macd_hist %v != macd %v - macd_signal %v", *out.MACDHist, *out.MACD, *out.MACDSignal)
+		}
+		if *out.BollingerLower >= *out.BollingerMiddle || *out.BollingerMiddle >= *out.BollingerUpper {
+			t.Errorf("bands out of order: %v %v %v", *out.BollingerLower, *out.BollingerMiddle, *out.BollingerUpper)
 		}
 		if !slices.Equal(out.Signals, want.Signals) || len(out.Signals) == 0 {
 			t.Errorf("signals = %v, want %v", out.Signals, want.Signals)
@@ -146,18 +156,21 @@ func TestGetTechnicalIndicators(t *testing.T) {
 	t.Run("steady rise reads RSI 100 and overbought", func(t *testing.T) {
 		var out getTechnicalIndicatorsOutput
 		callOK(t, sess, "get_technical_indicators", map[string]any{"symbol": "XLK"}, &out)
-		if out.RSI14 != 100 || out.MACD <= 0 || out.MACDHist < 0 {
-			t.Errorf("rsi/macd/hist = %v/%v/%v, want 100 and a positive MACD", out.RSI14, out.MACD, out.MACDHist)
+		if out.RSI14 == nil || out.MACD == nil || out.MACDHist == nil {
+			t.Fatalf("rsi/macd/hist = %v/%v/%v, want values on 300 bars", out.RSI14, out.MACD, out.MACDHist)
+		}
+		if *out.RSI14 != 100 || *out.MACD <= 0 || *out.MACDHist < 0 {
+			t.Errorf("rsi/macd/hist = %v/%v/%v, want 100 and a positive MACD", *out.RSI14, *out.MACD, *out.MACDHist)
 		}
 		if !slices.ContainsFunc(out.Signals, func(s string) bool { return strings.Contains(s, "overbought") }) {
 			t.Errorf("signals = %v, want an overbought reading", out.Signals)
 		}
 	})
 
-	t.Run("short history reports 0 and says why", func(t *testing.T) {
+	t.Run("short history reports null and says why", func(t *testing.T) {
 		var out getTechnicalIndicatorsOutput
 		callOK(t, sess, "get_technical_indicators", map[string]any{"symbol": "RSP"}, &out)
-		if out.Bars >= 200 || out.SMA200 != 0 || out.SMA50 == 0 {
+		if out.Bars >= 200 || out.SMA200 != nil || out.SMA50 == nil {
 			t.Errorf("bars/sma_200/sma_50 = %d/%v/%v, want under 200 bars with only sma_200 missing", out.Bars, out.SMA200, out.SMA50)
 		}
 		if !slices.ContainsFunc(out.Signals, func(s string) bool { return strings.Contains(s, "200-day average needs 200 bars") }) {
@@ -173,7 +186,7 @@ func TestGetTechnicalIndicators(t *testing.T) {
 		callOK(t, sess, "get_technical_indicators", map[string]any{"symbol": "SPY", "as_of": "2022-06-18"}, &out) // a Saturday
 		idx, _ := spy.IndexOn(date(t, "2022-06-17"))
 		want, _ := analytics.ComputeTechnicals(spy, date(t, "2022-06-17"))
-		if out.AsOf != "2022-06-17" || out.Bars != idx+1 || out.RSI14 != round2(want.RSI14) || out.Trend.AsOf != "2022-06-17" {
+		if out.AsOf != "2022-06-17" || out.Bars != idx+1 || out.RSI14 == nil || *out.RSI14 != round2(want.RSI14) || out.Trend.AsOf != "2022-06-17" {
 			t.Errorf("as_of/bars/rsi = %s/%d/%v, want 2022-06-17/%d/%v", out.AsOf, out.Bars, out.RSI14, idx+1, round2(want.RSI14))
 		}
 	})

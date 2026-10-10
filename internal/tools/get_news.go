@@ -16,7 +16,7 @@ const (
 )
 
 type getNewsInput struct {
-	Query string `json:"query" jsonschema:"a ticker such as SCHD or words such as 'treasury yields'"`
+	Query string `json:"query" jsonschema:"a ticker such as SCHD or words in Latin letters such as 'treasury yields'"`
 	Limit int    `json:"limit,omitempty" jsonschema:"maximum number of headlines, 1 to 20 (default 10)"`
 }
 
@@ -39,7 +39,7 @@ func (d Deps) registerGetNews(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_news",
 		Title:       "Get news",
-		Description: "Recent news headlines for a ticker or free text from Yahoo Finance search: title, publisher, link and publish time (UTC). Use it to explain a recent move or to give context; the tool returns headlines only, not article text, so cite the link rather than inventing details. At most limit headlines (default 10, max 20), in the provider's order.",
+		Description: "Recent news headlines for a ticker or free text from Yahoo Finance search: title, publisher, link and publish time (UTC). Use it to explain a recent move or to give context; the tool returns headlines only, not article text, so cite the link rather than inventing details. Yahoo search understands Latin letters only, so query by ticker or English words. At most limit headlines (default 10, max 20), in the provider's order.",
 		Annotations: readOnly("Get news", true),
 		InputSchema: inputSchema[getNewsInput](schemaTweaks{
 			defaults: map[string]any{"limit": defaultNewsLimit},
@@ -60,13 +60,17 @@ func (d Deps) getNews(ctx context.Context, in getNewsInput) (getNewsOutput, erro
 	if query == "" {
 		return getNewsOutput{}, errors.New("query is required: a ticker such as SCHD or words such as 'treasury yields'")
 	}
+	mixedScript, err := requireLatinQuery(query)
+	if err != nil {
+		return getNewsOutput{}, err
+	}
 	limit, err := parseDataLimit("limit", in.Limit, defaultNewsLimit, maxNewsLimit)
 	if err != nil {
 		return getNewsOutput{}, err
 	}
 	items, err := fund.News(ctx, query, limit)
 	if err != nil {
-		return getNewsOutput{}, fmt.Errorf("fetching news for %q failed: %s", query, strings.TrimPrefix(rootCause(err), "cache: "))
+		return getNewsOutput{}, fmt.Errorf("fetching news for %q failed: %s", query, fundCause(err))
 	}
 	out := getNewsOutput{Query: query, News: make([]newsRow, 0, min(len(items), limit))}
 	for _, it := range items {
@@ -83,6 +87,9 @@ func (d Deps) getNews(ctx context.Context, in getNewsInput) (getNewsOutput, erro
 	out.Count = len(out.News)
 	if out.Count == 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("no headlines for %q; try the ticker or broader words", query))
+	}
+	if mixedScript {
+		out.Notes = append(out.Notes, "Yahoo search ignores the words not written in Latin letters, so these headlines match the rest of the query only")
 	}
 	return out, nil
 }

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -35,6 +36,7 @@ type dataFakeFund struct {
 	searchLimit int
 	newsLimit   int
 	quoteCalls  int
+	quoteErr    error // when set, every Quote call fails with it
 }
 
 // errDataFakeNetwork is what the fake answers for BOOM.
@@ -43,7 +45,11 @@ var errDataFakeNetwork = errors.New("yahoo: BOOM: request: connection reset by p
 func (f *dataFakeFund) Quote(_ context.Context, symbols []string) ([]market.Quote, error) {
 	f.mu.Lock()
 	f.quoteCalls++
+	err := f.quoteErr
 	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	var out []market.Quote
 	for _, s := range symbols {
 		sym := strings.ToUpper(strings.TrimSpace(s))
@@ -128,6 +134,13 @@ func (f *dataFakeFund) News(_ context.Context, query string, limit int) ([]marke
 	return out, nil
 }
 
+// failQuotes makes every later Quote call fail with err; nil heals it.
+func (f *dataFakeFund) failQuotes(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.quoteErr = err
+}
+
 // limits returns the last limits Search and News were called with.
 func (f *dataFakeFund) limits() (search, news int) {
 	f.mu.Lock()
@@ -179,6 +192,12 @@ func newDataFakeFund() *dataFakeFund {
 	f.profiles["SPY"] = &market.FundProfile{Symbol: "SPY", Name: "SPDR S&P 500 ETF Trust", Family: "SPDR State Street Global Advisors", ExpenseRatio: ptr(0.000945), FetchedAt: now.Add(-time.Hour)}
 	f.profiles["BND"] = &market.FundProfile{Symbol: "BND", Name: "Vanguard Total Bond Market ETF", Family: "Vanguard", Category: "Intermediate Core Bond", ExpenseRatio: ptr(0.0003), FetchedAt: now.Add(-5 * 24 * time.Hour)}
 	f.profiles["AAPL"] = &market.FundProfile{Symbol: "AAPL", Name: "Apple Inc.", FetchedAt: now.Add(-time.Hour)}
+	// QQQ's price history starts 2021-01-04, well before this inception
+	// date, like SMH whose history includes a predecessor product.
+	f.profiles["QQQ"] = &market.FundProfile{
+		Symbol: "QQQ", Name: "Invesco QQQ Trust", Family: "Invesco", Category: "Large Growth", ExpenseRatio: ptr(0.002),
+		InceptionDate: time.Date(2023, time.June, 1, 0, 0, 0, 0, time.UTC), FetchedAt: now.Add(-time.Hour),
+	}
 
 	f.holdings["SCHD"] = &market.Holdings{
 		Symbol: "SCHD",
@@ -199,6 +218,34 @@ func newDataFakeFund() *dataFakeFund {
 		BondStats: map[string]float64{"duration": 6.05, "maturity": 8.4},
 		FetchedAt: now.Add(-time.Hour),
 	}
+	// HYGF is a high-yield bond fund whose provider sector split describes
+	// a negligible equity slice, like HYG's 99.59% utilities.
+	f.holdings["HYGF"] = &market.Holdings{
+		Symbol:      "HYGF",
+		Top:         []market.Holding{{Symbol: "XTSLA", Name: "BlackRock Cash Funds Treasury", Weight: 0.0099}},
+		Sectors:     []market.Weight{{Name: "realestate", Weight: 0.0041}, {Name: "utilities", Weight: 0.9959}},
+		BondRatings: []market.Weight{{Name: "bb", Weight: 0.5788}, {Name: "b", Weight: 0.3221}, {Name: "below_b", Weight: 0.0826}},
+		StockPct:    ptr(0.0), BondPct: ptr(0.9952), CashPct: ptr(0.0031), OtherPct: ptr(0.0017),
+		FetchedAt: now.Add(-time.Hour),
+	}
+	// BALF is a 60/40 fund: its equity sectors are halves of the stock part.
+	f.holdings["BALF"] = &market.Holdings{
+		Symbol:   "BALF",
+		Top:      []market.Holding{{Symbol: "VTI", Name: "Vanguard Total Stock Market ETF", Weight: 0.6}},
+		Sectors:  []market.Weight{{Name: "technology", Weight: 0.5}, {Name: "financial_services", Weight: 0.5}},
+		StockPct: ptr(0.6), BondPct: ptr(0.38), CashPct: ptr(0.02),
+		FetchedAt: now.Add(-time.Hour),
+	}
+	// TQQQ holds swaps' collateral in cash and a money-market fund.
+	f.holdings["TQQQ"] = &market.Holdings{
+		Symbol:      "TQQQ",
+		Top:         []market.Holding{{Symbol: "IQMM", Name: "ProShares money market", Weight: 0.1849}, {Symbol: "NVDA", Name: "NVIDIA Corp", Weight: 0.0279}},
+		Sectors:     []market.Weight{{Name: "technology", Weight: 0.6}, {Name: "communication_services", Weight: 0.4}},
+		BondRatings: []market.Weight{{Name: "us_government", Weight: 0.3502}, {Name: "aaa", Weight: 0}, {Name: "aa", Weight: 0}},
+		StockPct:    ptr(0.633), BondPct: ptr(0.0305), CashPct: ptr(0.3277), OtherPct: ptr(0.0089),
+		EquityStats: map[string]float64{"priceToEarnings": 0, "priceToBook": 0.1123},
+		FetchedAt:   now.Add(-time.Hour),
+	}
 	big := &market.Holdings{Symbol: "BIGF", StockPct: ptr(1.0), FetchedAt: now.Add(-time.Hour)}
 	for i := 0; i < 30; i++ {
 		big.Top = append(big.Top, market.Holding{Symbol: fmt.Sprintf("H%02d", i+1), Name: fmt.Sprintf("Holding %d", i+1), Weight: 0.01})
@@ -213,6 +260,9 @@ func newDataFakeFund() *dataFakeFund {
 			{Period: "10y", Fund: ptr(0.124372505), Category: ptr(0.1)},
 		},
 		Annual: []market.AnnualReturn{
+			// The category reaches back before the fund existed.
+			{Year: 2019, Fund: nil, Category: ptr(0.2)},
+			{Year: 2020, Fund: nil, Category: ptr(0.1)},
 			{Year: 2021, Fund: ptr(0.2986), Category: ptr(0.2571)},
 			{Year: 2022, Fund: ptr(-0.0322), Category: ptr(-0.0595)},
 			{Year: 2023, Fund: ptr(0.0457), Category: nil},
@@ -221,6 +271,7 @@ func newDataFakeFund() *dataFakeFund {
 			{Period: "3y", Alpha: ptr(1.4), Beta: ptr(0.56), MeanAnnualReturn: ptr(1.28), RSquared: ptr(25.04), StdDev: ptr(13.754), Sharpe: ptr(0.79), Treynor: ptr(19.49)},
 			{Period: "5y", Alpha: ptr(-0.74), Beta: nil},
 		},
+		AsOf:      time.Date(2023, time.December, 31, 0, 0, 0, 0, time.UTC),
 		FetchedAt: now.Add(-time.Hour),
 	}
 	bigPerf := &market.Performance{Symbol: "BIGF", FetchedAt: now.Add(-time.Hour)}
@@ -235,6 +286,9 @@ func newDataFakeFund() *dataFakeFund {
 		{Symbol: "SCHB", Name: "Schwab U.S. Broad Market ETF", Type: "ETF", Exchange: "NYSEArca"},
 		{Symbol: "SWPPX", Name: "Schwab S&P 500 Index Fund", Type: "MUTUALFUND", Exchange: "Nasdaq"},
 		{Symbol: "schx", Name: "Schwab U.S. Large-Cap ETF", Type: "ETF", Exchange: "NYSEArca"},
+		{Symbol: "VOO", Name: "Vanguard S&P 500 ETF", Type: "ETF", Exchange: "NYSEArca"},
+		{Symbol: "VFV.TO", Name: "Vanguard S&P 500 Index ETF", Type: "ETF", Exchange: "Toronto"},
+		{Symbol: "VUAA.L", Name: "Vanguard S&P 500 UCITS ETF", Type: "ETF", Exchange: "London"},
 	}
 	for i := 1; i <= 40; i++ {
 		kind := "ETF"
@@ -271,7 +325,18 @@ func newDataFakeSource() *fakeSource {
 	src.add(uvxy)
 
 	src.add(dataDividendGrower())
+	src.add(dataSplitPayer())
 	return src
+}
+
+// dataSplitPayer is SPLD: SPY-like bars from 2021-01-04 paying 0.3 every
+// 63 bars, with a 3-for-1 split on 2022-07-01. Like Yahoo's series, the
+// prices and dividends before the split are already divided by 3, so a
+// payment of 0.3 before it was 0.9 of cash per share at the time.
+func dataSplitPayer() *market.Series {
+	s := synthetic("SPLD", "USD", "ETF", seriesStart, 780, func(i int) float64 { return 50 + 0.01*float64(i) }, 63, 0.3)
+	s.Splits = []market.Split{{Date: time.Date(2022, time.July, 1, 0, 0, 0, 0, time.UTC), Numerator: 3, Denominator: 1}}
+	return s
 }
 
 // dataDividendGrower is VIG from 2016-01-04 to 2023-12-29 paying on the
@@ -305,6 +370,67 @@ func dataDeps(src *fakeSource, fund *dataFakeFund) Deps {
 	d := testDeps(src)
 	d.Fund = fund
 	return d
+}
+
+// callRaw invokes a tool, requires success and returns its structured
+// content as generic JSON, for checks on the wire format itself: which
+// keys exist and what they are called.
+func callRaw(t *testing.T, sess *mcp.ClientSession, name string, args map[string]any) map[string]any {
+	t.Helper()
+	var out map[string]any
+	callOK(t, sess, name, args, &out)
+	return out
+}
+
+// rawStrings returns the strings of a JSON array field, or nil.
+func rawStrings(v any) []string {
+	list, _ := v.([]any)
+	out := make([]string, 0, len(list))
+	for _, x := range list {
+		if s, ok := x.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// schemaDescription returns the description of a property in the output
+// schema of tool. path names nested properties; arrays are stepped
+// through, so "risk", "alpha" reaches the alpha of a risk row.
+func schemaDescription(t *testing.T, sess *mcp.ClientSession, tool string, path ...string) string {
+	t.Helper()
+	res, err := sess.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tl := range res.Tools {
+		if tl.Name != tool {
+			continue
+		}
+		raw, err := json.Marshal(tl.OutputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var node map[string]any
+		if err := json.Unmarshal(raw, &node); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range path {
+			if items, ok := node["items"].(map[string]any); ok {
+				node = items
+			}
+			props, _ := node["properties"].(map[string]any)
+			next, ok := props[name].(map[string]any)
+			if !ok {
+				t.Fatalf("%s output schema has no property %v", tool, path)
+			}
+			node = next
+		}
+		desc, _ := node["description"].(string)
+		return desc
+	}
+	t.Fatalf("tool %s is not listed", tool)
+	return ""
 }
 
 // newDataSession starts a session on the data fakes and returns them.
@@ -398,5 +524,43 @@ func TestDataHelpers(t *testing.T) {
 	}
 	if w := d.fundFetchedWarnings("X", now.Add(-72*time.Hour)); len(w) != 1 || !strings.Contains(w[0], "3 days ago") {
 		t.Errorf("old document warnings = %v, want one '3 days ago'", w)
+	}
+}
+
+func TestFundCause(t *testing.T) {
+	cause := errors.New("giving up after 3 attempts: unexpected HTTP status 429")
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{err: fmt.Errorf("cache: fetch quotes SPY,QQQ: %w", fmt.Errorf("yahoo: quote SPY,QQQ: %w", cause)), want: cause.Error()},
+		{err: fmt.Errorf("cache: fetch holdings SPY: %w", fmt.Errorf("yahoo: SPY: request: %w", errors.New("connection reset"))), want: "connection reset"},
+		{err: fmt.Errorf(`yahoo: search "s&p 500": %w`, cause), want: cause.Error()},
+		{err: errors.New("plain failure"), want: "plain failure"},
+	}
+	for _, tt := range tests {
+		if got := fundCause(tt.err); got != tt.want {
+			t.Errorf("fundCause(%q) = %q, want %q", tt.err, got, tt.want)
+		}
+	}
+}
+
+func TestRequireLatinQuery(t *testing.T) {
+	tests := []struct {
+		query        string
+		mixed, wrong bool
+	}{
+		{query: "dividend growth"},
+		{query: "S&P 500"},
+		{query: "Société Générale"},
+		{query: "미국 ETF", mixed: true},
+		{query: "미국 배당", wrong: true},
+		{query: "日本", wrong: true},
+	}
+	for _, tt := range tests {
+		mixed, err := requireLatinQuery(tt.query)
+		if mixed != tt.mixed || (err != nil) != tt.wrong {
+			t.Errorf("requireLatinQuery(%q) = %v, %v; want mixed %v, error %v", tt.query, mixed, err, tt.mixed, tt.wrong)
+		}
 	}
 }

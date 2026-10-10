@@ -210,3 +210,50 @@ func TestDividendFrequencyAndGrowth(t *testing.T) {
 		t.Errorf("five full years = %v/%q, want absent", g, note)
 	}
 }
+
+// TestGetDividendsReviewFixes pins the split caveat, the recent-years
+// frequency and the short-history flag on the trailing-year figures.
+func TestGetDividendsReviewFixes(t *testing.T) {
+	sess, _, _ := newDataSession(t)
+
+	t.Run("payments before a split", func(t *testing.T) {
+		out := callRaw(t, sess, "get_dividends", map[string]any{"symbol": "SPLD"})
+		divs, _ := out["dividends"].([]any)
+		if len(divs) == 0 {
+			t.Fatal("no dividends")
+		}
+		for _, d := range divs {
+			row := d.(map[string]any)
+			before := row["date"].(string) < "2022-07-01"
+			if paid, ok := row["amount_as_paid"]; before && paid != 0.9 || !before && ok {
+				t.Errorf("payment %v: amount_as_paid should be 0.9 before the 3:1 split and absent after", row)
+			}
+		}
+		if !hasDataNote(rawStrings(out["notes"]), "3:1 split on 2022-07-01") {
+			t.Errorf("notes = %v, want the split named", out["notes"])
+		}
+		if d := schemaDescription(t, sess, "get_dividends", "dividends", "amount"); !strings.Contains(d, "split") {
+			t.Errorf("amount description = %q, want the split adjustment stated", d)
+		}
+	})
+
+	t.Run("short history before ttm_as_of", func(t *testing.T) {
+		out := callRaw(t, sess, "get_dividends", map[string]any{"symbol": "SPY", "end": "2021-06-30"})
+		if !hasDataNote(rawStrings(out["notes"]), "52 weeks") {
+			t.Errorf("notes = %v, want the trailing-year figures flagged as partial", out["notes"])
+		}
+	})
+}
+
+func TestDividendFrequencyFollowsRecentYears(t *testing.T) {
+	// TQQQ's payment counts for its full years 2011-2025: the schedule
+	// became quarterly in 2023, so the long-run median of 1 is misleading.
+	counts := []int{0, 0, 0, 2, 1, 0, 0, 1, 2, 0, 0, 1, 4, 4, 4}
+	years := make([]divYear, 0, len(counts))
+	for i, n := range counts {
+		years = append(years, divYear{year: 2011 + i, payments: n, total: float64(n), full: true})
+	}
+	if got, label := dividendFrequency(years); got != 4 || label != "quarterly" {
+		t.Errorf("dividendFrequency = %v/%s, want 4/quarterly from the recent years", got, label)
+	}
+}

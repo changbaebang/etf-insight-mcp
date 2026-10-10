@@ -40,8 +40,9 @@ const (
 // With 200 to 219 bars the slope cannot be computed, so the slope
 // condition is dropped on both sides and the state follows the moving
 // averages alone; Reasons says so. Every indicator that lacks history is
-// mentioned in Reasons. Percentages are in percent (4.2 means 4.2%); the
-// other ratios are fractions.
+// mentioned in Reasons, whatever the state, including a volatility
+// computed from fewer daily returns than its window. Percentages are in
+// percent (4.2 means 4.2%); the other ratios are fractions.
 type Trend struct {
 	// AsOf is the date of the bar used: the last bar on or before the
 	// requested date.
@@ -60,7 +61,8 @@ type Trend struct {
 	// than 127 bars.
 	Return6M float64
 	// Volatility20D and Volatility1Y are annualized sample standard
-	// deviations of the last 20 and 252 daily log returns of AdjClose.
+	// deviations of the last 20 and 252 daily log returns of AdjClose, or
+	// of the fewer returns a shorter series has (0 with fewer than two).
 	Volatility20D, Volatility1Y float64
 	// SMA200Slope is SMA200(AsOf) / SMA200 20 bars ago - 1. 0 with fewer
 	// than 220 bars.
@@ -118,9 +120,10 @@ func ratioMinusOne(values []float64, num, den int) float64 {
 // classify applies the rule documented on Trend and explains its inputs.
 func classify(t Trend, bars int) (state string, reasons []string) {
 	if bars < longSMABars {
-		return StateInsufficientHistory, []string{
-			fmt.Sprintf("only %d of the %d bars needed for the 200-day average", bars, longSMABars),
-		}
+		reasons = []string{fmt.Sprintf(
+			"only %d of the %d bars needed for the 200-day average; the average and the close's distance from it are reported as 0",
+			bars, longSMABars)}
+		return StateInsufficientHistory, append(reasons, missingHistory(bars)...)
 	}
 	reasons = []string{
 		describeVsAverage(t.PctVsSMA50, "50-day"),
@@ -130,18 +133,10 @@ func classify(t Trend, bars int) (state string, reasons []string) {
 	slopeKnown := bars >= longSMABars+slopeBars
 	if slopeKnown {
 		reasons = append(reasons, describeSlope(t.SMA200Slope))
-	} else {
-		reasons = append(reasons, fmt.Sprintf(
-			"200-day average slope needs %d bars, only %d available; state judged on the averages alone",
-			longSMABars+slopeBars, bars))
 	}
-	if bars < momentumBars+1 {
-		reasons = append(reasons, fmt.Sprintf(
-			"12-1 momentum needs %d bars, only %d available; reported as 0", momentumBars+1, bars))
-	}
-	if bars < sixMonthBars+1 {
-		reasons = append(reasons, fmt.Sprintf(
-			"6-month return needs %d bars, only %d available; reported as 0", sixMonthBars+1, bars))
+	reasons = append(reasons, missingHistory(bars)...)
+	if !slopeKnown {
+		reasons = append(reasons, "without the slope, the state is judged on the averages alone")
 	}
 
 	above := t.Close > t.SMA200 && t.SMA50 > t.SMA200
@@ -154,6 +149,43 @@ func classify(t Trend, bars int) (state string, reasons []string) {
 	default:
 		return StateSideways, reasons
 	}
+}
+
+// missingHistory names every Trend indicator, other than the 200-day
+// average itself, that a series of the given number of bars is too short
+// for.
+func missingHistory(bars int) []string {
+	var out []string
+	needs := []struct {
+		name string
+		bars int
+	}{
+		{"50-day average", shortSMABars},
+		{"200-day average slope", longSMABars + slopeBars},
+		{"12-1 momentum", momentumBars + 1},
+		{"6-month return", sixMonthBars + 1},
+	}
+	for _, n := range needs {
+		if bars < n.bars {
+			out = append(out, fmt.Sprintf("%s needs %d bars, only %d available; reported as 0", n.name, n.bars, bars))
+		}
+	}
+	vols := []struct {
+		name    string
+		returns int
+	}{
+		{"20-day volatility", shortVolBars},
+		{"1-year volatility", tradingDaysPerYear},
+	}
+	for _, v := range vols {
+		switch returns := bars - 1; {
+		case returns < 2:
+			out = append(out, fmt.Sprintf("%s needs at least 3 bars, only %d available; reported as 0", v.name, bars))
+		case returns < v.returns:
+			out = append(out, fmt.Sprintf("%s uses only the %d daily returns available", v.name, returns))
+		}
+	}
+	return out
 }
 
 // describeVsAverage words a percentage distance from a moving average.

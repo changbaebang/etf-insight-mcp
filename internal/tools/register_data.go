@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
+	"net/url"
+	"regexp"
 	"time"
+	"unicode"
 
 	"github.com/changbaebang/etf-insight-mcp/internal/market"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -102,7 +104,42 @@ func describeFundError(sym, what string, err error) error {
 	if errors.Is(err, market.ErrNotFound) {
 		return describeFetchError(sym, err)
 	}
-	return fmt.Errorf("fetching %s for %s failed: %s", what, sym, strings.TrimPrefix(rootCause(err), "cache: "))
+	return fmt.Errorf("fetching %s for %s failed: %s", what, sym, fundCause(err))
+}
+
+// fundLayerPrefix matches the context the fund layers put in front of an
+// upstream error: "cache: fetch quotes SPY,QQQ: ", then "yahoo: quote
+// SPY,QQQ: " or "yahoo: search "x": " or "yahoo: SPY: ", then "request: ".
+var fundLayerPrefix = regexp.MustCompile(`^(cache: fetch (quotes|profile|holdings|performance) \S+: )?(yahoo: (quote \S+|search "[^"]*"|\S+): )?(request: )?`)
+
+// fundCause renders a FundSource error for a reader: the layer prefixes
+// and request URLs are dropped, the cause is kept.
+func fundCause(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err.Error()
+	}
+	return fundLayerPrefix.ReplaceAllString(err.Error(), "")
+}
+
+// requireLatinQuery rejects a search or news query without any Latin
+// letter or digit: Yahoo's search answers such a query with "Invalid
+// Search Query". The returned bool reports whether the query mixes in
+// words in other scripts, which Yahoo ignores.
+func requireLatinQuery(query string) (mixed bool, err error) {
+	latin := false
+	for _, r := range query {
+		switch {
+		case unicode.Is(unicode.Latin, r) || ('0' <= r && r <= '9'):
+			latin = true
+		case unicode.IsLetter(r):
+			mixed = true
+		}
+	}
+	if !latin {
+		return false, fmt.Errorf("query %q has no Latin letters or digits: Yahoo Finance search only understands Latin text, so use the ticker or the English fund name (for example 'dividend' or 'SCHD')", query)
+	}
+	return mixed, nil
 }
 
 // fundFetchedWarnings warns when a fund document is older than

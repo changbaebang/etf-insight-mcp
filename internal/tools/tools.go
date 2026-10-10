@@ -40,9 +40,9 @@ const Disclaimer = "Not investment advice. Every figure is computed from past pr
 // connect. Keep it in sync with the tool set.
 const Instructions = `etf-insight-mcp answers questions about small recurring purchases (dollar-cost averaging, DCA) of US-listed ETFs: what a plan would have done, what range of outcomes it could have, what it costs, and which similar funds exist.
 
-Data: daily prices, dividends and splits come from Yahoo Finance's unofficial chart API; fund descriptions (expense ratio, holdings, provider performance), quotes, search and news come from its quote endpoints. Prices are delayed. Price history is stored on disk once (~/Library/Caches/etf-insight-mcp) and afterwards only the newest bars are fetched; fund documents are cached for a day and quotes for 15 minutes. KRW plans use the KRW=X rate (KRW per 1 USD). Symbols outside the built-in universe work when Yahoo knows them.
+Data: daily prices, dividends and splits come from Yahoo Finance's unofficial chart API; fund descriptions (expense ratio, holdings, provider performance), quotes, search and news come from its quote endpoints. Prices are delayed. Price history is stored on disk once (by default in ~/Library/Caches/etf-insight-mcp; cache_status shows the directory in use) and afterwards only the newest bars are fetched; fund documents are cached for a day and quotes for 15 minutes. KRW plans use the KRW=X rate (KRW per 1 USD). Symbols outside the built-in universe work when Yahoo knows them.
 
-Units: amount is ONE contribution in the plan currency (USD or KRW) before costs. fee_rate is a fraction of each contribution and commission_fixed a fixed amount per purchase; for small daily purchases the fixed commission is usually the largest cost. Money is rounded to 2 decimals and share counts to 4. Fields ending in _pct are plain percentages (7.5 means 7.5%). Dates are YYYY-MM-DD; timestamps are RFC 3339 UTC.
+Units: amount is ONE contribution in the plan currency (USD or KRW) before costs. fee_rate is a fraction of each contribution and commission_fixed a fixed amount per ETF purchased (a portfolio pays it once for each ETF on every contribution day; forecast_dca folds it into its fee rate); for small daily purchases the fixed commission is usually the largest cost. Money is rounded to 2 decimals and share counts to 4. Fields ending in _pct are plain percentages (7.5 means 7.5%). Dates are YYYY-MM-DD; timestamps are RFC 3339 UTC.
 
 Which tool:
 - Find funds: list_etfs (built-in universe), search_symbols (anything Yahoo knows), screen_universe (rank the universe by momentum, returns, volatility, drawdown, dividend yield or trend).
@@ -52,9 +52,9 @@ Which tool:
 - Look ahead: forecast_dca, a block bootstrap of history that gives a range of outcomes, not a price prediction.
 - "Is my plan reasonable?": review_dca_plan splits a plan into costs, history, a short-term and a long-term view; follow it with find_alternatives.
 - Cache: cache_status (files, size, warnings), refresh_prices (refetch now), clear_cache (deletes files, needs confirm=true).
-The etf://universe resource is the universe CSV, and the dca_report prompt chains get_etf_info, simulate_dca and forecast_dca into a short write-up.
+The etf://universe resource is the universe CSV, and the dca_report prompt chains get_etf_info, get_fund_profile, get_holdings, simulate_dca and forecast_dca into a short write-up. Simulation, forecast, review and comparison tools accept only funds quoted in USD.
 
-Errors come back as tool errors whose message says what to change (an unknown symbol points at list_etfs, a bad date shows the expected format).
+Errors come back as tool errors whose message says what to change (an unknown symbol points at list_etfs and search_symbols, a bad date shows the expected format).
 
 ` + Disclaimer
 
@@ -135,11 +135,20 @@ func (d Deps) clock() time.Time {
 }
 
 // round2 rounds money to two decimals.
-func round2(x float64) float64 { return math.Round(x*100) / 100 }
+func round2(x float64) float64 { return noNegativeZero(math.Round(x*100) / 100) }
 
 // round4 keeps four decimals for share counts and per-share dividends,
 // which are too small for cents to be meaningful.
-func round4(x float64) float64 { return math.Round(x*10000) / 10000 }
+func round4(x float64) float64 { return noNegativeZero(math.Round(x*10000) / 10000) }
+
+// noNegativeZero turns -0, which rounding a tiny negative number yields
+// and JSON prints as "-0", into 0. Every other value is returned as is.
+func noNegativeZero(x float64) float64 {
+	if x == 0 { // true for -0 as well
+		return 0
+	}
+	return x
+}
 
 // pct turns a fraction (0.075) into a percentage rounded to two decimals
 // (7.5).
@@ -153,6 +162,12 @@ func formatDate(t time.Time) string {
 	return t.Format(market.DateLayout)
 }
 
+// minYear is the earliest year a date input may name. The data starts
+// decades later, and 0001-01-01 is Go's zero time, which every tool reads
+// as "not given": accepting it would silently change the meaning of the
+// input instead of reporting it.
+const minYear = 1900
+
 // parseDate parses a required YYYY-MM-DD input field.
 func parseDate(field, value string) (time.Time, error) {
 	value = strings.TrimSpace(value)
@@ -162,6 +177,9 @@ func parseDate(field, value string) (time.Time, error) {
 	t, err := market.ParseDate(value)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%s %q is not a date; use YYYY-MM-DD", field, value)
+	}
+	if t.Year() < minYear {
+		return time.Time{}, fmt.Errorf("%s %q is out of range; use a YYYY-MM-DD date from %d on", field, value, minYear)
 	}
 	return t, nil
 }
@@ -209,15 +227,16 @@ func (d Deps) fetchSeries(ctx context.Context, symbol string) (*market.Series, e
 }
 
 // describeFetchError rewrites a Source error for the model: an unknown
-// symbol points at list_etfs, a symbol that is in the universe but missing
-// upstream says so, and anything else keeps its cause.
+// symbol points at list_etfs and search_symbols, a symbol that is in the
+// universe but missing upstream says so, and anything else keeps its
+// cause.
 func describeFetchError(sym string, err error) error {
 	switch {
 	case errors.Is(err, market.ErrNotFound):
 		if _, known := universe.Get(sym); known {
 			return fmt.Errorf("symbol %s is in the universe but the data source returned not found; the ticker may have changed or been delisted, try search_symbols or another symbol", sym)
 		}
-		return fmt.Errorf("unknown symbol %s: not in universe and the data source returned not found; use list_etfs", sym)
+		return fmt.Errorf("unknown symbol %s: not in universe and the data source returned not found; use list_etfs for the built-in universe, or search_symbols to find the ticker the data source uses", sym)
 	case errors.Is(err, cache.ErrInvalidSymbol):
 		return fmt.Errorf("invalid symbol %q: use letters, digits and . - = ^ only, or find one with list_etfs", sym)
 	default:
@@ -232,9 +251,8 @@ func rootCause(err error) string {
 	if errors.As(err, &urlErr) {
 		return urlErr.Err.Error()
 	}
-	msg := err.Error()
-	msg = fetchPrefix.ReplaceAllString(msg, "")
-	return msg
+	msg := fetchPrefix.ReplaceAllString(err.Error(), "")
+	return fundLayerPrefix.ReplaceAllString(msg, "")
 }
 
 // fetchPrefix matches the "cache: fetch X: yahoo: X: request: " chain the
@@ -293,8 +311,15 @@ func uniqueSymbols(symbols []string) []string {
 }
 
 // staleWarnings reports, for sym, whether the cache served a stale file
-// after an upstream failure and whether fresh data could not be cached.
-// Both are empty without a cache or after a clean, persisted fetch.
+// after an upstream failure and whether the latest download could not be
+// written. Both are empty without a cache or after a clean, persisted
+// fetch.
+//
+// A failed write does not tell which copy a later call received: the
+// download itself, a refetch, or the older file when it is still within
+// its TTL (after a forced refresh, for instance). The write warning
+// therefore names both possibilities instead of claiming the data is
+// current.
 //
 // Call it only for symbols whose series reached the caller: a failed cold
 // fetch records an upstream error too, and the wording would then claim
@@ -309,7 +334,7 @@ func (d Deps) staleWarnings(sym string) []string {
 		out = append(out, fmt.Sprintf("%s may be stale: served from the cached file because the last fetch failed (%s)", sym, rootCause(err)))
 	}
 	if err := d.Cache.LastWriteError(sym); err != nil {
-		out = append(out, fmt.Sprintf("%s is current but could not be cached (%s); every call refetches it until the cache directory is writable", sym, rootCause(err)))
+		out = append(out, fmt.Sprintf("%s is current but could not be written to the cache (%s); this server keeps it in memory, and a restart will fetch it again", sym, rootCause(err)))
 	}
 	return out
 }

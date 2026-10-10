@@ -125,3 +125,54 @@ func TestAnalyzeTrendAsOf(t *testing.T) {
 		t.Fatalf("asOf must ignore later bars: got %+v, want %+v", tr, full)
 	}
 }
+
+// TestAnalyzeTrendShortSeriesNamesEveryMissingIndicator: below 200 bars
+// the state is insufficient-history, but every other indicator reported
+// as 0 must still say why, as the Trend doc promises.
+func TestAnalyzeTrendShortSeriesNamesEveryMissingIndicator(t *testing.T) {
+	tests := []struct {
+		bars     int
+		want     []string
+		unwanted []string
+	}{
+		{
+			bars: 100,
+			want: []string{
+				"only 100 of the 200 bars needed for the 200-day average",
+				"200-day average slope needs 220 bars, only 100 available",
+				"12-1 momentum needs 253 bars, only 100 available; reported as 0",
+				"6-month return needs 127 bars, only 100 available; reported as 0",
+				"1-year volatility uses only the 99 daily returns available",
+			},
+			unwanted: []string{"50-day average needs"},
+		},
+		{
+			bars:     150,
+			want:     []string{"12-1 momentum needs 253 bars", "200-day average slope needs 220 bars"},
+			unwanted: []string{"6-month return needs", "50-day average needs"},
+		},
+		{
+			bars: 40,
+			want: []string{"50-day average needs 50 bars, only 40 available; reported as 0"},
+		},
+	}
+	for _, tt := range tests {
+		tr, err := AnalyzeTrend(growthSeries("NEW", tt.bars, 0.001), time.Time{})
+		if err != nil {
+			t.Fatalf("AnalyzeTrend: %v", err)
+		}
+		if tr.State != StateInsufficientHistory {
+			t.Errorf("%d bars: State = %q, want insufficient-history", tt.bars, tr.State)
+		}
+		for _, w := range tt.want {
+			if !hasReason(tr.Reasons, w) {
+				t.Errorf("%d bars: Reasons %q lack %q", tt.bars, tr.Reasons, w)
+			}
+		}
+		for _, u := range tt.unwanted {
+			if hasReason(tr.Reasons, u) {
+				t.Errorf("%d bars: Reasons %q must not mention %q", tt.bars, tr.Reasons, u)
+			}
+		}
+	}
+}

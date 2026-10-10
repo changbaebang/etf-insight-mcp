@@ -24,7 +24,7 @@ const (
 const (
 	rsiOverbought   = 70 // RSI above this reads "overbought"
 	rsiOversold     = 30 // RSI below this reads "oversold"
-	recentCrossBars = 10 // a crossover this many bars back or less is reported
+	recentCrossBars = 10 // a crossover on one of the last 10 bars (0 to 9 bars ago) is reported
 	sma20Bars       = 20
 )
 
@@ -222,7 +222,9 @@ type Technicals struct {
 	MACD, MACDSignal, MACDHist float64
 	// BollingerMiddle, BollingerUpper and BollingerLower are the 20-period,
 	// 2-sigma bands. BollingerPctB is (Close - lower) / (upper - lower):
-	// 0 at the lower band, 1 at the upper band, outside [0, 1] beyond them.
+	// 0 at the lower band, 1 at the upper band, outside [0, 1] beyond them,
+	// and 0.5 when the bands collapse onto the middle band because the
+	// last 20 closes are identical (the close then sits on the middle).
 	BollingerMiddle, BollingerUpper, BollingerLower, BollingerPctB float64
 	// ATR14 is the 14-period average true range in price units.
 	ATR14 float64
@@ -283,7 +285,7 @@ func ComputeTechnicals(s *market.Series, asOf time.Time) (Technicals, error) {
 		BollingerMiddle: orZero(ts.middle[idx]),
 		BollingerUpper:  orZero(ts.upper[idx]),
 		BollingerLower:  orZero(ts.lower[idx]),
-		BollingerPctB:   orZero((last.Close - ts.lower[idx]) / (ts.upper[idx] - ts.lower[idx])),
+		BollingerPctB:   orZero(percentB(last.Close, ts.lower[idx], ts.upper[idx])),
 		ATR14:           orZero(ts.atr[idx]),
 		SMA20:           orZero(ts.sma20[idx]),
 		SMA50:           orZero(ts.sma50[idx]),
@@ -293,6 +295,17 @@ func ComputeTechnicals(s *market.Series, asOf time.Time) (Technicals, error) {
 	}
 	t.Signals = ts.signals()
 	return t, nil
+}
+
+// percentB returns where price sits between the Bollinger bands as a
+// fraction, 0 at lower and 1 at upper. Bands that coincide (up to
+// rounding) mean every close in the window was the same, so the price is
+// on the middle band: 0.5. NaN bands give NaN.
+func percentB(price, lower, upper float64) float64 {
+	if upper-lower <= 1e-12*math.Abs(upper) {
+		return 0.5
+	}
+	return (price - lower) / (upper - lower)
 }
 
 // newTechSeries computes every indicator over bars, whose last element is
@@ -327,10 +340,11 @@ func (ts *techSeries) signals() []string {
 func (ts *techSeries) rsiSignals() []string {
 	rsi := ts.rsi[ts.idx]
 	switch {
+	// One decimal, so 70.2 does not print as the threshold 70 itself.
 	case rsi > rsiOverbought:
-		return []string{fmt.Sprintf("RSI %.0f overbought", rsi)}
+		return []string{fmt.Sprintf("RSI %.1f overbought", rsi)}
 	case rsi < rsiOversold: // false for NaN
-		return []string{fmt.Sprintf("RSI %.0f oversold", rsi)}
+		return []string{fmt.Sprintf("RSI %.1f oversold", rsi)}
 	default:
 		return nil
 	}
@@ -389,11 +403,11 @@ func crossSignals(series []float64, idx int, name, other string) []string {
 	}
 }
 
-// recentCross finds the most recent sign change of series at or before
-// idx within lookback bars: a change at bar k compares series[k] with
-// series[k-1], both defined. It returns how many bars before idx the
-// change happened, whether the series went up through zero, and false
-// when no change is found.
+// recentCross finds the most recent sign change of series on one of the
+// last lookback bars up to idx: a change at bar k compares series[k] with
+// series[k-1], both defined, and is found when idx - k < lookback. It
+// returns how many bars before idx the change happened, whether the
+// series went up through zero, and false when no change is found.
 func recentCross(series []float64, idx, lookback int) (barsAgo int, up, ok bool) {
 	for k := idx; k >= 1 && k > idx-lookback; k-- {
 		cur, prev := series[k], series[k-1]
@@ -440,7 +454,10 @@ func (ts *techSeries) historyNotes() []string {
 		need  int
 	}{
 		{"RSI", ts.rsi[ts.idx], DefaultRSIPeriod + 1},
+		{"MACD line", ts.macd[ts.idx], DefaultMACDSlow},
 		{"MACD signal line", ts.signal[ts.idx], DefaultMACDSlow + DefaultMACDSignal - 1},
+		{"12-day exponential average", ts.ema12[ts.idx], DefaultMACDFast},
+		{"26-day exponential average", ts.ema26[ts.idx], DefaultMACDSlow},
 		{"Bollinger band", ts.middle[ts.idx], DefaultBollingerPeriod},
 		{"ATR", ts.atr[ts.idx], DefaultATRPeriod + 1},
 		{"20-day average", ts.sma20[ts.idx], sma20Bars},

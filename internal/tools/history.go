@@ -56,7 +56,7 @@ func requireUSD(s *market.Series) error {
 func instrumentNote(s *market.Series) string {
 	switch strings.ToUpper(strings.TrimSpace(s.Meta.InstrumentType)) {
 	case "INDEX":
-		return fmt.Sprintf("%s is an index, not an investable fund: its prices carry no dividends, fees or tracking error, so results overstate what a fund holder would get", s.Meta.Symbol)
+		return fmt.Sprintf("%s is an index, not an investable fund: unless it is a total-return index its prices leave out dividends, so returns usually understate what a fund tracking it delivered, and it bears no fees or tracking error; use a fund that tracks it for investable figures", s.Meta.Symbol)
 	case "CURRENCY":
 		return fmt.Sprintf("%s is an exchange rate, not an investable fund", s.Meta.Symbol)
 	default:

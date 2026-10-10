@@ -30,20 +30,38 @@ type simulateLumpSumVsDCAOutput struct {
 	PerContributionAmount float64            `json:"per_contribution_amount" jsonschema:"gross size of each DCA contribution: total_amount divided by the DCA leg's contributions"`
 	LumpSum               simResultOutput    `json:"lump_sum" jsonschema:"total_amount invested on the first trading day of the range and held to end"`
 	DCA                   simResultOutput    `json:"dca" jsonschema:"total_amount split evenly over every contribution day of the cadence and valued at end"`
-	Diff                  diffOutput         `json:"diff" jsonschema:"lump_sum minus dca from the rounded figures: positive means investing everything on the first day did better"`
+	Diff                  lumpSumDiffOutput  `json:"diff" jsonschema:"lump_sum minus dca in final_value and return_pct, from the rounded figures: positive means investing everything on the first day ended with more"`
 	Notes                 []string           `json:"notes,omitempty"`
 	Disclaimer            string             `json:"disclaimer"`
 }
 
+// lumpSumDiffOutput is the lump-sum leg minus the DCA leg. It carries no
+// annualized difference on purpose: each leg's annualized_return_pct is
+// money-weighted, and the DCA leg's money is invested for less time on
+// average, so its rate can equal or beat the lump sum's while it ends
+// with less. Only the final value and the simple return, both measured on
+// the same total_amount, rank the two legs.
+type lumpSumDiffOutput struct {
+	FinalValue float64 `json:"final_value" jsonschema:"lump_sum.final_value minus dca.final_value, in the plan currency"`
+	ReturnPct  float64 `json:"return_pct" jsonschema:"lump_sum.return_pct minus dca.return_pct, in percentage points"`
+}
+
 // lumpSumNoteNames renames the engine's field names in sim's lump-sum
-// notes to the wire names the model sees.
-var lumpSumNoteNames = strings.NewReplacer("Diff is lump sum minus DCA", "diff is lump_sum minus dca")
+// notes to the wire names the model sees, and limits the sign rule to the
+// two fields diff carries.
+var lumpSumNoteNames = strings.NewReplacer("Diff is lump sum minus DCA:", "diff is lump_sum minus dca in final_value and return_pct:")
+
+// Caveats simulateLumpSumVsDCA adds to its notes.
+const (
+	lumpSumRatesNote    = "lump_sum.annualized_return_pct and dca.annualized_return_pct are money-weighted (XIRR): the DCA leg's money was invested for less time on average, so its rate can match or beat the lump sum's while it ends with less. They are not a ranking; compare diff.final_value and diff.return_pct"
+	lumpSumDrawdownNote = "max_drawdown_pct is measured on the unitised value path, which ignores when money was added: for one ETF it is the same in both legs and for a portfolio nearly so, so it does not show that the DCA leg had less money invested early on"
+)
 
 func (d Deps) registerSimulateLumpSumVsDCA(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "simulate_lump_sum_vs_dca",
 		Title:       "Simulate lump sum vs DCA",
-		Description: "Answers \"invest it all now or spread it out?\" with history. The same total_amount is put into the symbol (or portfolio) twice on one trading calendar: lump_sum invests all of it on the first trading day on or after start, dca splits it evenly over every daily, weekly or monthly contribution day from start to end (per_contribution_amount = total_amount / contributions); both legs are valued at end with the same fees and dividend model. Each leg reports what simulate_dca reports (invested, fees, cost_ratio_pct, final value, profit, return, money-weighted annualized return omitted for ranges under a year, max drawdown, holdings, month-end timeline) and diff = lump_sum minus dca (positive: the lump sum did better). commission_fixed is paid once by the lump sum and once per purchase by the DCA leg, which can decide small plans. Defaults: currency USD, cadence daily, end = latest bar, fee_rate 0, commission_fixed 0, dividends reinvested. One start date only; for how the answer depends on the start date use simulate_rolling_dca. Historical, not a forecast.",
+		Description: "Answers \"invest it all now or spread it out?\" with history. The same total_amount is put into the symbol (or portfolio) twice on one trading calendar: lump_sum invests all of it on the first trading day on or after start, dca splits it evenly over every daily, weekly or monthly contribution day from start to end (per_contribution_amount = total_amount / contributions); both legs are valued at end with the same fees and dividend model. Each leg reports what simulate_dca reports (invested, fees, cost_ratio_pct, final value, profit, return, money-weighted annualized return omitted for ranges under a year, max drawdown, holdings, month-end timeline thinned to quarter- or year-ends beyond 120 months) and diff = lump_sum minus dca in final value and return (positive: the lump sum ended with more). There is no annualized difference: the legs' money-weighted rates are not comparable, and max drawdown is the same for one ETF in both legs (see notes). commission_fixed is charged per ETF purchased: once per ETF by the lump sum and once per ETF on every contribution day by the DCA leg, which can decide small plans. Every symbol must be quoted in USD. Defaults: currency USD, cadence daily, end = latest bar, fee_rate 0, commission_fixed 0, dividends reinvested. One start date only; for how the answer depends on the start date use simulate_rolling_dca. Historical, not a forecast.",
 		Annotations: readOnly("Simulate lump sum vs DCA", true),
 		InputSchema: inputSchema[simulateLumpSumVsDCAInput](schemaTweaks{
 			defaults: costDefaults(map[string]any{"currency": "USD", "cadence": "daily"}),
@@ -95,7 +113,7 @@ func (d Deps) simulateLumpSumVsDCA(ctx context.Context, in simulateLumpSumVsDCAI
 	}
 	// The lump-sum leg pays the commission on total_amount; the DCA leg's
 	// per-purchase check needs the calendar and is the engine's.
-	if err := in.validate(in.TotalAmount); err != nil {
+	if err := in.validate(in.TotalAmount, allocs); err != nil {
 		return simulateLumpSumVsDCAOutput{}, err
 	}
 	plan := sim.Plan{
@@ -130,25 +148,23 @@ func (d Deps) simulateLumpSumVsDCA(ctx context.Context, in simulateLumpSumVsDCAI
 		PerContributionAmount: round2(res.TotalAmount / float64(res.DCA.Contributions)),
 		LumpSum:               lump,
 		DCA:                   dca,
-		Diff: diffOutput{
+		Diff: lumpSumDiffOutput{
 			FinalValue: round2(lump.FinalValue - dca.FinalValue),
 			ReturnPct:  round2(lump.ReturnPct - dca.ReturnPct),
 		},
 		Disclaimer: Disclaimer,
 	}
-	if lump.AnnualizedReturnPct != nil && dca.AnnualizedReturnPct != nil {
-		out.Diff.AnnualizedReturnPct = ptr(round2(*lump.AnnualizedReturnPct - *dca.AnnualizedReturnPct))
-	}
 	for _, n := range res.Notes {
 		if strings.HasPrefix(n, "Diff.AnnualizedReturn") {
-			continue // replaced below with the wire rule, which also omits ranges under a year
+			continue // diff has no annualized field; lumpSumRatesNote explains why
 		}
 		out.Notes = append(out.Notes, lumpSumNoteNames.Replace(n))
 	}
-	if out.Diff.AnnualizedReturnPct == nil {
-		out.Notes = append(out.Notes, "diff.annualized_return_pct omitted: at least one leg has no annualized return (see lump_sum.notes and dca.notes)")
+	if lump.AnnualizedReturnPct != nil && dca.AnnualizedReturnPct != nil {
+		out.Notes = append(out.Notes, lumpSumRatesNote)
 	}
-	out.Notes = append(out.Notes, d.planStaleWarnings(plan)...)
+	out.Notes = append(out.Notes, lumpSumDrawdownNote)
+	out.Notes = append(out.Notes, d.planWarnings(plan, simIn)...)
 	return out, nil
 }
 

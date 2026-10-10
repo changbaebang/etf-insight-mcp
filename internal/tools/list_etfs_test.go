@@ -53,15 +53,15 @@ func TestListETFs(t *testing.T) {
 		}
 	})
 
-	t.Run("query matches symbol or name", func(t *testing.T) {
+	t.Run("query matches symbol, name, issuer or note", func(t *testing.T) {
 		var out listETFsOutput
 		callOK(t, sess, "list_etfs", map[string]any{"query": "treasury"}, &out)
 		if out.Count == 0 {
 			t.Fatal("no treasury ETFs")
 		}
 		for _, e := range out.ETFs {
-			if !strings.Contains(strings.ToLower(e.Symbol+" "+e.Name), "treasury") {
-				t.Errorf("%s %q does not match treasury", e.Symbol, e.Name)
+			if !strings.Contains(strings.ToLower(strings.Join([]string{e.Symbol, e.Name, e.Issuer, e.Note}, " ")), "treasury") {
+				t.Errorf("%s %q (note %q) does not match treasury", e.Symbol, e.Name, e.Note)
 			}
 		}
 	})

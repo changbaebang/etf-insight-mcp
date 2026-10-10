@@ -2,11 +2,12 @@
 # It is NOT an exact AUM ranking and does not claim to be complete; funds were chosen for
 # recognisability and category coverage, and only when the name and issuer were certain.
 # Leveraged and inverse funds (leveraged=true) are included only so they can be analyzed.
+# Spot crypto funds (such as IBIT) and mortgage-backed bond funds (such as MBB) are left out on
+# purpose: the category set has no place for them, even where their assets would qualify.
 # Nothing in this file is a recommendation.
 # Columns: symbol,name,issuer,category,leveraged,note (note is at most 80 characters)
 symbol,name,issuer,category,leveraged,note
 VTI,Vanguard Morningstar Total Stock Market ETF,Vanguard,US Broad Market,false,Tracks the Morningstar US Total Market Index of nearly every US-listed stock
-VXF,Vanguard Extended Market ETF,Vanguard,US Broad Market,false,Holds US mid- and small-cap stocks outside the S&P 500
 ITOT,iShares Core S&P Total U.S. Stock Market ETF,iShares,US Broad Market,false,Tracks the S&P Total Market Index
 SCHB,Schwab U.S. Broad Market ETF,Schwab,US Broad Market,false,Tracks the Dow Jones U.S. Broad Stock Market Index
 DFAC,Dimensional U.S. Core Equity 2 ETF,Dimensional,US Broad Market,false,Active broad US equity fund tilted toward small and value stocks
@@ -35,6 +36,7 @@ IJH,iShares Core S&P Mid-Cap ETF,iShares,US Mid Cap,false,Tracks the S&P MidCap 
 VO,Vanguard Morningstar Mid-Cap ETF,Vanguard,US Mid Cap,false,Tracks the Morningstar US Mid Cap Index
 IWR,iShares Russell Mid-Cap ETF,iShares,US Mid Cap,false,Tracks the Russell Midcap Index
 MDY,SPDR S&P MidCap 400 ETF Trust,State Street,US Mid Cap,false,Tracks the S&P MidCap 400
+VXF,Vanguard Extended Market ETF,Vanguard,US Mid Cap,false,Tracks the S&P Completion Index: US stocks outside the S&P 500
 IWM,iShares Russell 2000 ETF,iShares,US Small Cap,false,Tracks the Russell 2000 small-cap index
 IJR,iShares Core S&P Small-Cap ETF,iShares,US Small Cap,false,Tracks the S&P SmallCap 600
 VB,Vanguard Morningstar Small-Cap ETF,Vanguard,US Small Cap,false,Tracks the Morningstar US Small Cap Index
@@ -73,6 +75,7 @@ SPLV,Invesco S&P 500 Low Volatility ETF,Invesco,Factor,false,Holds the 100 least
 VEA,Vanguard FTSE Developed Markets ETF,Vanguard,International Developed,false,Holds developed-market stocks outside the US
 VXUS,Vanguard Total International Stock ETF,Vanguard,International ex-US,false,Holds all non-US stocks across developed and emerging markets
 IXUS,iShares Core MSCI Total International Stock ETF,iShares,International ex-US,false,Holds developed and emerging market stocks outside the US
+VEU,Vanguard FTSE All-World ex-US ETF,Vanguard,International ex-US,false,Holds large- and mid-cap stocks of developed and emerging markets outside the US
 SPDW,SPDR Portfolio Developed World ex-US ETF,State Street,International Developed,false,Developed-market stocks outside the US at a low expense ratio
 IEFA,iShares Core MSCI EAFE ETF,iShares,International Developed,false,Holds developed-market stocks in Europe Australasia and the Far East
 EFA,iShares MSCI EAFE ETF,iShares,International Developed,false,Holds large and mid caps in developed markets outside North America

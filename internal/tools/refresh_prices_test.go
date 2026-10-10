@@ -104,7 +104,7 @@ func TestRefreshPrices(t *testing.T) {
 		callErr(t, newSession(t, deps), "refresh_prices", map[string]any{"symbols": many, "universe": true}, "at most 200 per call")
 	})
 
-	t.Run("write failure is a warning", func(t *testing.T) {
+	t.Run("write failure is not ok", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root ignores directory permissions")
 		}
@@ -115,8 +115,12 @@ func TestRefreshPrices(t *testing.T) {
 		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 		var out refreshPricesOutput
 		callOK(t, newSession(t, deps), "refresh_prices", map[string]any{"symbols": []string{"SPY"}}, &out)
-		if !out.Results[0].OK || len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "SPY is current but could not be cached") {
-			t.Errorf("out = %+v, want ok with a write warning", out)
+		r := out.Results[0]
+		if r.OK || r.Bars != 780 || !strings.Contains(r.Error, "downloaded but the cache file could not be written") {
+			t.Errorf("SPY = %+v, want a failed row that says the download was not cached", r)
+		}
+		if out.Refreshed != 0 || out.Failed != 1 || len(out.Warnings) != 0 {
+			t.Errorf("refreshed/failed/warnings = %d/%d/%v, want 0/1/none", out.Refreshed, out.Failed, out.Warnings)
 		}
 	})
 
@@ -143,4 +147,53 @@ func TestRefreshPrices(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestRefreshPricesCancelStopsNewDownloads cancels a large refresh once the
+// first prefetchConcurrency downloads are running. No further download may
+// start: the cache runs each one detached from the caller, so a download
+// started after the cancellation would run on with nobody waiting for it.
+func TestRefreshPricesCancelStopsNewDownloads(t *testing.T) {
+	src := newOpsBlockingSource(t)
+	deps, _, _ := opsCache(t, src)
+	syms := universe.Symbols()[:60]
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for src.started.Load() < prefetchConcurrency {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	// A real progress callback sends an MCP notification; the pause stands
+	// in for it and gives finished workers time to free their slots while
+	// the loop is still handing out symbols.
+	progress := func(int, int, string) { time.Sleep(200 * time.Microsecond) }
+	out, err := deps.refreshPrices(ctx, refreshPricesInput{Symbols: syms}, progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := src.started.Load(); n != prefetchConcurrency {
+		t.Errorf("downloads started = %d, want %d (none after the cancellation)", n, prefetchConcurrency)
+	}
+	if out.Refreshed != 0 || out.Failed != len(syms) {
+		t.Errorf("refreshed/failed = %d/%d, want 0/%d", out.Refreshed, out.Failed, len(syms))
+	}
+	last := out.Results[len(out.Results)-1]
+	if last.OK || !strings.Contains(last.Error, "not refreshed: context canceled") {
+		t.Errorf("last row = %+v, want a not-refreshed row", last)
+	}
+	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "cancelled") {
+		t.Errorf("warnings = %v, want one cancellation warning", out.Warnings)
+	}
+}
+
+func TestRefreshPricesBlankSymbols(t *testing.T) {
+	src := newFakeSource()
+	deps, store, _ := opsCache(t, src)
+	opsWarm(t, store, "SPY", "VOO")
+	callErr(t, newSession(t, deps), "refresh_prices", map[string]any{"symbols": []string{" ", ""}}, "no valid symbol")
+	if n := src.callCount("SPY"); n != 1 {
+		t.Errorf("SPY fetched %d times, want 1 (the warm-up only)", n)
+	}
 }

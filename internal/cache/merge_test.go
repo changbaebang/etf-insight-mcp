@@ -40,6 +40,10 @@ func mkSeries(symbol string, specs ...string) *market.Series {
 	return s
 }
 
+// windowFrom is where a top-up of cachedHistory starts: seven days before
+// its last bar, as with DefaultOverlap.
+var windowFrom = date("2026-09-25")
+
 // cachedHistory is the history on disk before a top-up: one trading week.
 func cachedHistory() *market.Series {
 	return mkSeries("SPY", "2026-09-28:100", "2026-09-29:101", "2026-09-30:102", "2026-10-01:103", "2026-10-02:104")
@@ -81,7 +85,7 @@ func TestMergeTailAppends(t *testing.T) {
 	base := cachedHistory()
 	tail := cut(providerHistory(), date("2026-09-25"), date("2026-10-08"))
 
-	merged, err := mergeTail(base, tail)
+	merged, err := mergeTail(base, tail, windowFrom)
 	if err != nil {
 		t.Fatalf("mergeTail: %v", err)
 	}
@@ -105,7 +109,7 @@ func TestMergeTailReplacesNewestCachedBar(t *testing.T) {
 	// is 104.5. That alone must not force a full fetch.
 	truth := providerHistory()
 	truth.Bars[4].Close, truth.Bars[4].AdjClose = 104.5, 104.5
-	merged, err := mergeTail(cachedHistory(), cut(truth, date("2026-09-25"), date("2026-10-08")))
+	merged, err := mergeTail(cachedHistory(), cut(truth, date("2026-09-25"), date("2026-10-08")), windowFrom)
 	if err != nil {
 		t.Fatalf("mergeTail: %v", err)
 	}
@@ -116,7 +120,7 @@ func TestMergeTailReplacesNewestCachedBar(t *testing.T) {
 
 func TestMergeTailEmptyTail(t *testing.T) {
 	base := cachedHistory()
-	merged, err := mergeTail(base, &market.Series{Meta: base.Meta})
+	merged, err := mergeTail(base, &market.Series{Meta: base.Meta}, windowFrom)
 	if err != nil {
 		t.Fatalf("mergeTail: %v", err)
 	}
@@ -129,13 +133,13 @@ func TestMergeTailToleratesFloatNoise(t *testing.T) {
 	truth := providerHistory()
 	truth.Bars[1].Close *= 1 + 1e-9
 	truth.Bars[2].AdjClose *= 1 - 1e-9
-	if _, err := mergeTail(cachedHistory(), cut(truth, date("2026-09-25"), date("2026-10-08"))); err != nil {
+	if _, err := mergeTail(cachedHistory(), cut(truth, date("2026-09-25"), date("2026-10-08")), windowFrom); err != nil {
 		t.Errorf("mergeTail rejected float noise: %v", err)
 	}
 }
 
 func TestMergeTailNeedsFull(t *testing.T) {
-	window := func(s *market.Series) *market.Series { return cut(s, date("2026-09-25"), date("2026-10-08")) }
+	window := func(s *market.Series) *market.Series { return cut(s, windowFrom, date("2026-10-08")) }
 	tests := []struct {
 		name string
 		tail func() *market.Series
@@ -202,7 +206,7 @@ func TestMergeTailNeedsFull(t *testing.T) {
 				s.Bars = append(s.Bars[:3], s.Bars[4:]...) // drop 10-01
 				return window(s)
 			},
-			want: "5 cached bars since 2026-09-28 but 4 in the tail",
+			want: "5 cached bars since 2026-09-25 but 4 in the tail",
 		},
 		{
 			name: "extra bar in the overlap",
@@ -212,7 +216,7 @@ func TestMergeTailNeedsFull(t *testing.T) {
 				s.Bars = append([]market.Bar{extra}, s.Bars...)
 				return window(s)
 			},
-			want: "5 cached bars since 2026-09-27 but 6 in the tail",
+			want: "5 cached bars since 2026-09-25 but 6 in the tail",
 		},
 		{
 			name: "tail date differs",
@@ -222,6 +226,48 @@ func TestMergeTailNeedsFull(t *testing.T) {
 				return window(s)
 			},
 			want: "cached bar on 2026-09-28, tail bar on 2026-09-27",
+		},
+		{
+			name: "no cached day in the tail, only new bars",
+			tail: func() *market.Series {
+				return mkSeries("SPY", "2026-10-05:1050", "2026-10-06:1060", "2026-10-07:1070")
+			},
+			want: "5 cached bars since 2026-09-25 but 0 in the tail",
+		},
+		{
+			name: "only the newest cached day in the tail",
+			tail: func() *market.Series {
+				return mkSeries("SPY", "2026-10-02:1040", "2026-10-05:1050", "2026-10-06:1060")
+			},
+			want: "5 cached bars since 2026-09-25 but 1 in the tail",
+		},
+		{
+			name: "first cached day of the window missing",
+			tail: func() *market.Series {
+				s := providerHistory()
+				s.Bars = s.Bars[1:] // drop 09-28
+				return window(s)
+			},
+			want: "5 cached bars since 2026-09-25 but 4 in the tail",
+		},
+		{
+			name: "newest cached day missing while newer bars arrive",
+			tail: func() *market.Series {
+				s := providerHistory()
+				s.Bars = append(s.Bars[:4], s.Bars[5:]...) // drop 10-02
+				return window(s)
+			},
+			want: "5 cached bars since 2026-09-25 but 4 in the tail",
+		},
+		{
+			name: "newest cached day withheld and an older price changed",
+			tail: func() *market.Series {
+				s := cachedHistory()
+				s.Bars = s.Bars[:4]
+				s.Bars[3].Close = 999
+				return window(s)
+			},
+			want: "prices on 2026-10-01 changed",
 		},
 		{
 			name: "invalid tail",
@@ -235,7 +281,7 @@ func TestMergeTailNeedsFull(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			merged, err := mergeTail(cachedHistory(), tt.tail())
+			merged, err := mergeTail(cachedHistory(), tt.tail(), windowFrom)
 			if !errors.Is(err, errNeedFull) {
 				t.Fatalf("err = %v, want errNeedFull (merged = %v)", err, merged)
 			}
@@ -246,12 +292,37 @@ func TestMergeTailNeedsFull(t *testing.T) {
 	}
 }
 
+func TestMergeTailNeedsBarsToCompare(t *testing.T) {
+	// A window holding only the newest cached day leaves nothing that the
+	// price check covers.
+	base := mkSeries("SPY", "2026-09-01:100", "2026-10-02:104")
+	tail := mkSeries("SPY", "2026-10-02:104", "2026-10-05:1050")
+	if _, err := mergeTail(base, tail, windowFrom); !errors.Is(err, errNeedFull) || !strings.Contains(err.Error(), "no cached bar since 2026-09-25") {
+		t.Errorf("err = %v, want errNeedFull for nothing to compare", err)
+	}
+}
+
+func TestMergeTailDropsWithheldNewestBar(t *testing.T) {
+	base := cachedHistory()
+	tail := cut(cachedHistory(), windowFrom, date("2026-10-01")) // 10-02 withheld
+	merged, err := mergeTail(base, tail, windowFrom)
+	if err != nil {
+		t.Fatalf("mergeTail: %v", err)
+	}
+	if want := []float64{100, 101, 102, 103}; !equalFloats(closes(merged), want) {
+		t.Errorf("closes = %v, want %v", closes(merged), want)
+	}
+	if base.Len() != 5 {
+		t.Errorf("base mutated: %d bars", base.Len())
+	}
+}
+
 func TestMergeTailKeepsCachedSplit(t *testing.T) {
 	base := cachedHistory()
 	base.Splits = []market.Split{{Date: date("2026-09-30"), Numerator: 3, Denominator: 1}}
 	truth := providerHistory()
 	truth.Splits = base.Splits
-	merged, err := mergeTail(base, cut(truth, date("2026-09-25"), date("2026-10-08")))
+	merged, err := mergeTail(base, cut(truth, date("2026-09-25"), date("2026-10-08")), windowFrom)
 	if err != nil {
 		t.Fatalf("a split already cached forced a full fetch: %v", err)
 	}
@@ -262,7 +333,7 @@ func TestMergeTailKeepsCachedSplit(t *testing.T) {
 
 func TestMergeTailEmptyBase(t *testing.T) {
 	base := &market.Series{Meta: market.Meta{Symbol: "SPY"}}
-	if _, err := mergeTail(base, providerHistory()); !errors.Is(err, errNeedFull) {
+	if _, err := mergeTail(base, providerHistory(), windowFrom); !errors.Is(err, errNeedFull) {
 		t.Errorf("err = %v, want errNeedFull for an empty cached history", err)
 	}
 }

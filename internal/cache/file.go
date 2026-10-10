@@ -1,14 +1,18 @@
 package cache
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,8 +23,9 @@ import (
 // package. A file without a "version" field is version 1.
 const formatVersion = 2
 
-// tempFileMaxAge is how old a leftover *.tmp file must be before the
-// constructors sweep it; younger ones may belong to a write in progress.
+// tempFileMaxAge is how old a leftover temporary file must be before the
+// constructors sweep it or ClearAll removes it; younger ones may belong
+// to a write in progress.
 const tempFileMaxAge = 10 * time.Minute
 
 // entry is one cached symbol as stored in <dir>/<SYMBOL>.json (format
@@ -106,8 +111,9 @@ type header struct {
 }
 
 // readHeader reads the top-level fields of the price file at path. A
-// version 2 file is read only up to its "series" key; a version 1 file
-// has no summary and is decoded in full.
+// version 2 file is read only up to its "series" key, plus its last few
+// bytes to make sure it was not cut short; a version 1 file has no summary
+// and is decoded in full.
 func readHeader(path string) (header, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -149,7 +155,30 @@ func readHeader(path string) (header, error) {
 			return skipValue(dec)
 		}
 	})
+	if err == nil && summarized {
+		err = checkComplete(f)
+	}
 	return h, err
+}
+
+// checkComplete returns an error unless the price file f ends the way
+// writeEntry leaves it: the series object closed, then the entry object,
+// then a newline. "}}" appears nowhere else in a price file, so a file cut
+// short (which readEntry would reject) fails this without the bars being
+// read.
+func checkComplete(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("cache: stat %s: %w", f.Name(), err)
+	}
+	tail := make([]byte, min(info.Size(), 16))
+	if _, err := f.ReadAt(tail, info.Size()-int64(len(tail))); err != nil {
+		return fmt.Errorf("cache: read end of %s: %w", f.Name(), err)
+	}
+	if !bytes.HasSuffix(bytes.TrimRight(tail, " \t\r\n"), []byte("}}")) {
+		return errors.New("cache: file is cut short")
+	}
+	return nil
 }
 
 // summarize decodes a series value and records its bar count and dates.
@@ -261,22 +290,80 @@ func writeAndRename(tmp *os.File, dst string, v any) error {
 	return nil
 }
 
-// sweepTempFiles deletes *.tmp files in dir older than tempFileMaxAge.
-// Errors are ignored: the sweep is housekeeping, not a precondition.
+// sweepTempFiles deletes the temporary files writeJSONAtomic left in dir
+// that are older than tempFileMaxAge. Other files, this package's or not,
+// are never touched. Errors are ignored: the sweep is housekeeping, not a
+// precondition.
 func sweepTempFiles(dir string, now time.Time) {
-	matches, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	for _, path := range matches {
-		info, err := os.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		if now.Sub(info.ModTime()) > tempFileMaxAge {
-			_ = os.Remove(path)
+	for _, d := range entries {
+		if isLeftoverTemp(d, now) {
+			_ = os.Remove(filepath.Join(dir, d.Name()))
 		}
 	}
+}
+
+// isLeftoverTemp reports whether d is a regular file that writeJSONAtomic
+// created and that is older than tempFileMaxAge.
+func isLeftoverTemp(d fs.DirEntry, now time.Time) bool {
+	if !d.Type().IsRegular() || !isOwnTempFile(d.Name()) {
+		return false
+	}
+	info, err := d.Info()
+	return err == nil && now.Sub(info.ModTime()) > tempFileMaxAge
+}
+
+// isOwnTempFile reports whether name is a temporary file writeJSONAtomic
+// creates: the name of a price or fund file, a dot, the random digits
+// os.CreateTemp adds, and ".tmp" (SPY.json.123.tmp,
+// SPY.profile.json.456.tmp).
+func isOwnTempFile(name string) bool {
+	stem, ok := strings.CutSuffix(name, ".tmp")
+	if !ok {
+		return false
+	}
+	i := strings.LastIndexByte(stem, '.')
+	if i < 0 {
+		return false
+	}
+	target, random := stem[:i], stem[i+1:]
+	return isDigits(random) && (isPriceFile(target) || isFundFile(target))
+}
+
+// isDigits reports whether s is one or more ASCII digits.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// cacheHeader matches the start of every file this package writes, as
+// encoding/json lays it out: a version and a fetch time first (price
+// files of version 2 and fund files), or the Go field name FetchedAt
+// (price files of version 1).
+var cacheHeader = regexp.MustCompile(`^\{("version":[0-9]+,"fetched_at"|"FetchedAt"):"`)
+
+// hasCacheHeader reports whether the file at path starts like a file this
+// package wrote. A name alone is not enough to delete a file: a cache
+// directory may be shared with other programs' files such as 1.json.
+func hasCacheHeader(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, 64)
+	n, _ := io.ReadFull(f, buf)
+	return cacheHeader.Match(buf[:n])
 }
 
 // errTable remembers the most recent error per key. Its zero value is
@@ -323,9 +410,20 @@ func (t *errTable) reset() {
 	t.m = nil
 }
 
-// keys returns the remembered keys in sorted order.
-func (t *errTable) keys() []string {
+// keyedError is one entry of an errTable snapshot.
+type keyedError struct {
+	key string
+	err error
+}
+
+// snapshot returns every remembered error sorted by key, read under one
+// lock so that a key and its error always belong together.
+func (t *errTable) snapshot() []keyedError {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return slices.Sorted(maps.Keys(t.m))
+	out := make([]keyedError, 0, len(t.m))
+	for _, key := range slices.Sorted(maps.Keys(t.m)) {
+		out = append(out, keyedError{key: key, err: t.m[key]})
+	}
+	return out
 }

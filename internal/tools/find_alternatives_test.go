@@ -90,7 +90,7 @@ func TestFindAlternatives(t *testing.T) {
 		if ivv.ExpenseRatioPct == nil || *ivv.ExpenseRatioPct != 0.03 || ivv.ExpenseRatioDiffPctPoints == nil || *ivv.ExpenseRatioDiffPctPoints != 0 {
 			t.Errorf("IVV expense = %v/%v", ivv.ExpenseRatioPct, ivv.ExpenseRatioDiffPctPoints)
 		}
-		if ivv.Observation != "practically the same exposure (corr 1.000), same expense ratio" {
+		if ivv.Observation != "practically the same exposure (corr 1.0000), same expense ratio" {
 			t.Errorf("IVV observation = %q", ivv.Observation)
 		}
 		spym := analysisCandidate(t, out.Candidates, "SPYM")
@@ -110,7 +110,10 @@ func TestFindAlternatives(t *testing.T) {
 		// MTUM grows by (1+g)^2 a year when VOO grows by 1+g, so it beats
 		// VOO by g + g^2.
 		dates, voo, _ := analysisAligned(src.series["VOO"], src.series["MTUM"], date(t, out.CommonRange.From), date(t, out.CommonRange.To))
-		g := altAnnualized(voo, dates[0], dates[len(dates)-1])
+		g, ok := analysisAnnualized(voo, dates[0], dates[len(dates)-1])
+		if !ok {
+			t.Fatalf("VOO is not annualized over %s..%s", out.CommonRange.From, out.CommonRange.To)
+		}
 		if mtum.TrackingDifference3YPct == nil || math.Abs(*mtum.TrackingDifference3YPct-pct(g+g*g)) > 0.011 {
 			t.Errorf("MTUM tracking difference = %v, want %v", mtum.TrackingDifference3YPct, pct(g+g*g))
 		}
@@ -196,8 +199,10 @@ func TestFindAlternatives(t *testing.T) {
 		}
 		var strict findAlternativesOutput
 		callOK(t, sess, "find_alternatives", map[string]any{"symbol": "VOO", "min_correlation": 0.999}, &strict)
-		if slices.Contains(analysisCandidateSymbols(strict.Candidates), "QQQ") || !slices.Contains(analysisCandidateSymbols(strict.DifferentExposure), "QQQ") {
-			t.Errorf("min_correlation 0.999 kept QQQ: %v / %v", analysisCandidateSymbols(strict.Candidates), analysisCandidateSymbols(strict.DifferentExposure))
+		// QQQ (corr about 0.95) misses the threshold but is too similar for
+		// different_exposure, which keeps SPY and SCHD as in the default call.
+		if slices.Contains(analysisCandidateSymbols(strict.Candidates), "QQQ") || !slices.Equal(analysisCandidateSymbols(strict.DifferentExposure), []string{"SPY", "SCHD"}) {
+			t.Errorf("min_correlation 0.999: candidates %v, different_exposure %v, want no QQQ and SPY, SCHD", analysisCandidateSymbols(strict.Candidates), analysisCandidateSymbols(strict.DifferentExposure))
 		}
 	})
 

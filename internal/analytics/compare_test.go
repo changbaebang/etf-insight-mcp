@@ -361,3 +361,16 @@ func TestCompareErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestCompareBenchmarkBetaIsOne: the benchmark's beta to itself is 1 and
+// its alpha 0 even when the range is too short to regress anything.
+func TestCompareBenchmarkBetaIsOne(t *testing.T) {
+	spy, _, _ := compareFixture()
+	c, err := Compare([]*market.Series{spy, spy}, spy.Bars[10].Date, spy.Bars[11].Date)
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if c.Bars != 2 || c.BetaToFirst[0] != 1 || c.AlphaToFirst[0] != 0 {
+		t.Errorf("bars %d, BetaToFirst = %v, AlphaToFirst = %v; want 2 bars and a benchmark beta of 1, alpha 0", c.Bars, c.BetaToFirst, c.AlphaToFirst)
+	}
+}

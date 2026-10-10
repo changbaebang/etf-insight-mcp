@@ -130,36 +130,83 @@ func NewFundStore(next market.FundSource, dir string, opts ...FundOption) *FundS
 	return f
 }
 
-// Quote returns quotes for symbols in the order requested, serving each
-// from memory when it was fetched less than the quote TTL ago and asking
-// the wrapped source for the rest in one call. Symbols the source does not
-// know are omitted, as market.FundSource specifies. When the source fails,
-// quotes still in memory, however old, are served for the symbols that
-// have them and the failure is kept for LastError; without any, the error
-// is returned. A symbol that is not safe as a cache key returns an error
-// wrapping ErrInvalidSymbol.
-func (f *FundStore) Quote(ctx context.Context, symbols []string) ([]market.Quote, error) {
+// QuoteReport is what FundStore.QuoteReport served for one request. A
+// requested symbol that is neither in Quotes nor in Failed is unknown to
+// the source.
+type QuoteReport struct {
+	// Quotes holds one quote per requested symbol that has one, in request
+	// order, followed in symbol order by any quote the source returned
+	// under a symbol that was not requested.
+	Quotes []market.Quote
+	// Stale lists the quotes in Quotes that were served from memory past
+	// the quote TTL because refreshing them failed, in request order.
+	Stale []StaleQuote
+	// Failed lists the requested symbols without a quote because the fetch
+	// failed and memory held none, in request order.
+	Failed []string
+	// Err is the fetch failure behind Stale and Failed; nil when the
+	// source answered or did not need to be asked.
+	Err error
+}
+
+// StaleQuote describes a quote served from memory after a failed refresh.
+type StaleQuote struct {
+	Symbol string
+	// FetchedAt is when the source last returned the quote.
+	FetchedAt time.Time
+	// Age is how long before the request that was.
+	Age time.Duration
+}
+
+// QuoteReport returns quotes for symbols in the order requested, serving
+// each from memory when it was fetched less than the quote TTL ago and
+// asking the wrapped source for the rest in one call. When that call
+// fails, the quotes memory still holds for those symbols, however old, are
+// served and listed in Stale, the symbols memory lacks are listed in
+// Failed, and the failure is kept in Err and for LastError. Symbols the
+// source answers without are unknown to it and are simply omitted, as
+// market.FundSource specifies.
+//
+// The error is non-nil only for a symbol that is not safe as a cache key
+// (it wraps ErrInvalidSymbol); upstream trouble is reported in the
+// QuoteReport.
+func (f *FundStore) QuoteReport(ctx context.Context, symbols []string) (*QuoteReport, error) {
 	syms, err := normalizeSymbols(symbols)
 	if err != nil {
 		return nil, err
 	}
 	now := f.now()
 	have, missing := f.freshQuotes(syms, now)
+	r := &QuoteReport{}
 	if len(missing) > 0 {
 		got, err := f.next.Quote(ctx, missing)
 		if err != nil {
-			err = fmt.Errorf("cache: fetch quotes %s: %w", strings.Join(missing, ","), err)
-			f.setQuoteErr(missing, err)
-			f.staleQuotes(missing, have)
-			if len(have) == 0 {
-				return nil, err
-			}
+			r.Err = fmt.Errorf("cache: fetch quotes %s: %w", strings.Join(missing, ","), err)
+			f.setQuoteErr(missing, r.Err)
+			r.Stale, r.Failed = f.staleQuotes(missing, have, now)
 		} else {
 			f.setQuoteErr(missing, nil)
 			f.rememberQuotes(got, now, have)
 		}
 	}
-	return orderQuotes(syms, have), nil
+	r.Quotes = orderQuotes(syms, have)
+	return r, nil
+}
+
+// Quote is QuoteReport for callers that only need the quotes, and it
+// implements market.FundSource: stale quotes are served like fresh ones,
+// and the fetch failure is returned only when no requested quote could be
+// served at all. Use QuoteReport to tell stale quotes and failed fetches
+// apart from symbols the source does not know.
+func (f *FundStore) Quote(ctx context.Context, symbols []string) ([]market.Quote, error) {
+	r, err := f.QuoteReport(ctx, symbols)
+	if err != nil {
+		return nil, err
+	}
+	if len(r.Quotes) == 0 && r.Err != nil {
+		return nil, r.Err
+	}
+	return r.Quotes, nil
 }
 
 // freshQuotes splits syms into quotes fresh in memory and symbols that
@@ -181,15 +228,22 @@ func (f *FundStore) freshQuotes(syms []string, now time.Time) (have map[string]m
 	return have, missing
 }
 
-// staleQuotes adds whatever memory holds for syms to have, fresh or not.
-func (f *FundStore) staleQuotes(syms []string, have map[string]market.Quote) {
+// staleQuotes adds whatever memory holds for syms to have, however old,
+// after a failed fetch. It returns those quotes as stale, with their age
+// as of now, and the symbols memory has nothing for as failed.
+func (f *FundStore) staleQuotes(syms []string, have map[string]market.Quote, now time.Time) (stale []StaleQuote, failed []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, sym := range syms {
-		if q, ok := f.quotes[sym]; ok {
-			have[sym] = q.quote
+		q, ok := f.quotes[sym]
+		if !ok {
+			failed = append(failed, sym)
+			continue
 		}
+		have[sym] = q.quote
+		stale = append(stale, StaleQuote{Symbol: sym, FetchedAt: q.at, Age: now.Sub(q.at)})
 	}
+	return stale, failed
 }
 
 // rememberQuotes stores got in memory as of now and adds them to have.

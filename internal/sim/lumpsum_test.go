@@ -163,10 +163,36 @@ func TestRunLumpSumVsDCAFees(t *testing.T) {
 	requireFloat(t, "Diff.FinalValue", res.Diff.FinalValue, 2, tight)
 	found := false
 	for _, n := range res.Notes {
-		found = found || strings.Contains(n, "paid once by the lump sum (fees 5.50) and 5 times by the DCA leg (fees 7.50)")
+		found = found || strings.Contains(n, "charged per ETF purchased, is paid once by the lump sum (fees 5.50) and 5 times by the DCA leg (fees 7.50)")
 	}
 	if !found {
 		t.Errorf("Notes = %q, want the commission comparison", res.Notes)
+	}
+}
+
+func TestRunLumpSumVsDCAFixedFeePerETF(t *testing.T) {
+	spy := newSeries(t, "SPY", "2024-01-01", 5, constant(100))
+	bnd := newSeries(t, "BND", "2024-01-01", 5, constant(50))
+	p := Plan{
+		Allocations: []Allocation{{Symbol: "SPY", Weight: 0.5}, {Symbol: "BND", Weight: 0.5}},
+		Currency:    CurrencyUSD,
+		Cadence:     Daily,
+		FeeFixed:    0.5,
+	}
+	res, err := RunLumpSumVsDCA(p, seriesInput(spy, bnd), 500)
+	if err != nil {
+		t.Fatalf("RunLumpSumVsDCA: %v", err)
+	}
+	// Two orders per purchase: the lump sum pays 2 × 0.50, the DCA leg
+	// 5 days × 2 × 0.50.
+	requireFloat(t, "LumpSum.Fees", res.LumpSum.Fees, 1, tight)
+	requireFloat(t, "DCA.Fees", res.DCA.Fees, 5, tight)
+	found := false
+	for _, n := range res.Notes {
+		found = found || strings.Contains(n, "is paid 2 times by the lump sum (fees 1.00) and 10 times by the DCA leg (fees 5.00)")
+	}
+	if !found {
+		t.Errorf("Notes = %q, want the per-ETF commission comparison", res.Notes)
 	}
 }
 

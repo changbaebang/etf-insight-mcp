@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // etfsCSV is the raw embedded universe file. See etfs.csv for the column
@@ -51,7 +52,11 @@ type Query struct {
 	Category string
 	// Issuer must equal the fund's Issuer, ignoring case.
 	Issuer string
-	// Text must appear in the fund's Symbol or Name, ignoring case.
+	// Text is split into words at spaces and hyphens; every word must
+	// appear, ignoring case, in the fund's Symbol, Name, Issuer or Note.
+	// "nasdaq 100" therefore finds QQQ, whose note names the Nasdaq-100,
+	// and "schwab dividend" finds SCHD although the words are not adjacent
+	// in its name.
 	Text string
 	// IncludeLeveraged keeps leveraged and inverse funds in the result. The
 	// default (false) drops them even when Category names their category.
@@ -277,7 +282,7 @@ func Get(symbol string) (ETF, bool) {
 func Filter(q Query) []ETF {
 	category := strings.TrimSpace(q.Category)
 	issuer := strings.TrimSpace(q.Issuer)
-	text := strings.ToLower(strings.TrimSpace(q.Text))
+	words := textWords(q.Text)
 
 	out := []ETF{}
 	for _, e := range load().etfs {
@@ -290,7 +295,7 @@ func Filter(q Query) []ETF {
 		if issuer != "" && !strings.EqualFold(e.Issuer, issuer) {
 			continue
 		}
-		if text != "" && !matchesText(e, text) {
+		if len(words) > 0 && !matchesWords(e, words) {
 			continue
 		}
 		out = append(out, e)
@@ -298,11 +303,26 @@ func Filter(q Query) []ETF {
 	return out
 }
 
-// matchesText reports whether the lower-cased needle appears in the fund's
-// symbol or name.
-func matchesText(e ETF, needle string) bool {
-	return strings.Contains(strings.ToLower(e.Symbol), needle) ||
-		strings.Contains(strings.ToLower(e.Name), needle)
+// textWords lower-cases text and splits it into words at whitespace and
+// hyphens, so "Nasdaq-100" and "nasdaq 100" search for the same words.
+func textWords(text string) []string {
+	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return r == '-' || unicode.IsSpace(r)
+	})
+}
+
+// matchesWords reports whether every lower-cased word appears somewhere in
+// the fund's symbol, name, issuer or note. Hyphens in the fund's text
+// count as spaces, matching how textWords splits the query.
+func matchesWords(e ETF, words []string) bool {
+	haystack := strings.ToLower(strings.Join([]string{e.Symbol, e.Name, e.Issuer, e.Note}, " "))
+	haystack = strings.ReplaceAll(haystack, "-", " ")
+	for _, w := range words {
+		if !strings.Contains(haystack, w) {
+			return false
+		}
+	}
+	return true
 }
 
 // Categories returns the distinct categories in order of first appearance in

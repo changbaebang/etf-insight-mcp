@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -145,5 +146,95 @@ func TestDownsample(t *testing.T) {
 		if last := got[len(got)-1].Close; last != float64(tt.n-1) {
 			t.Errorf("downsample(n=%d, limit=%d) last = %v, want %d", tt.n, tt.limit, last, tt.n-1)
 		}
+	}
+}
+
+// TestGetPriceHistoryKeepsEveryDividend checks that a point standing for
+// several bars (a week, a month, or a stretch skipped by downsampling)
+// carries the dividends of all of them, so the column always sums to what
+// the fund paid in the range.
+func TestGetPriceHistoryKeepsEveryDividend(t *testing.T) {
+	src := newFakeSource()
+	sess := newSession(t, testDeps(src))
+	spy := src.series["SPY"]
+	sumBars := func(bars []market.Bar) float64 {
+		total := 0.0
+		for _, b := range bars {
+			total += b.Dividend
+		}
+		return round4(total)
+	}
+	before := sumBars(spy.Bars)
+
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "daily", args: map[string]any{"interval": "daily", "max_points": 2000}},
+		{name: "daily downsampled", args: map[string]any{"interval": "daily"}},
+		{name: "daily to one point", args: map[string]any{"interval": "daily", "max_points": 1}},
+		{name: "weekly", args: map[string]any{"interval": "weekly"}},
+		{name: "weekly downsampled", args: map[string]any{"interval": "weekly", "max_points": 7}},
+		{name: "monthly", args: map[string]any{"interval": "monthly"}},
+		{name: "monthly in a range", args: map[string]any{"interval": "monthly", "start": "2022-02-15", "end": "2023-02-15"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.args["symbol"] = "SPY"
+			var out getPriceHistoryOutput
+			callOK(t, sess, "get_price_history", tt.args, &out)
+			start, _ := tt.args["start"].(string)
+			end, _ := tt.args["end"].(string)
+			var from, to time.Time
+			if start != "" {
+				from, to = date(t, start), date(t, end)
+			}
+			want := sumBars(spy.Between(from, to))
+			if want == 0 {
+				t.Fatal("the range holds no dividend; the test proves nothing")
+			}
+			paid := 0.0
+			for _, p := range out.Points {
+				paid += p.Dividend
+			}
+			if round4(paid) != want {
+				t.Errorf("dividends sum to %v over %d points, want %v", round4(paid), out.Count, want)
+			}
+		})
+	}
+	if after := sumBars(spy.Bars); after != before {
+		t.Errorf("the cached series changed: dividends sum to %v, was %v", after, before)
+	}
+}
+
+func TestBucketAndDownsampleFoldDividends(t *testing.T) {
+	day := func(s string) time.Time { return date(t, s) }
+	bars := []market.Bar{
+		{Date: day("2024-01-29"), Close: 1},                // Monday, January
+		{Date: day("2024-01-31"), Close: 2, Dividend: 0.5}, // Wednesday, January
+		{Date: day("2024-02-01"), Close: 3, Dividend: 0.25},
+		{Date: day("2024-02-02"), Close: 4}, // Friday
+		{Date: day("2024-02-05"), Close: 5, Dividend: 1},
+	}
+	dividends := func(bars []market.Bar) []float64 {
+		out := make([]float64, len(bars))
+		for i, b := range bars {
+			out[i] = b.Dividend
+		}
+		return out
+	}
+	if got, want := dividends(bucket(bars, intervalMonthly)), []float64{0.5, 1.25}; !slices.Equal(got, want) {
+		t.Errorf("monthly dividends = %v, want %v", got, want)
+	}
+	if got, want := dividends(bucket(bars, intervalWeekly)), []float64{0.75, 1}; !slices.Equal(got, want) {
+		t.Errorf("weekly dividends = %v, want %v", got, want)
+	}
+	// limit 3 gives stride 2: bars 0, 2 and 4 are kept.
+	thinned, _ := downsample(bars, 3)
+	if got, want := dividends(thinned), []float64{0, 0.75, 1}; !slices.Equal(got, want) {
+		t.Errorf("downsampled dividends = %v, want %v", got, want)
+	}
+	if got, want := dividends(bars), []float64{0, 0.5, 0.25, 0, 1}; !slices.Equal(got, want) {
+		t.Errorf("input changed to %v, want %v", got, want)
 	}
 }

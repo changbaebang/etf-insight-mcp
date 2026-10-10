@@ -15,7 +15,7 @@ const leveragedCategory = "Leveraged / Inverse"
 type listETFsInput struct {
 	Category         string `json:"category,omitempty" jsonschema:"exact category name, case-insensitive; every valid name is returned in categories, e.g. Dividend, US Large Cap, US Treasury"`
 	Issuer           string `json:"issuer,omitempty" jsonschema:"exact issuer name, case-insensitive: Vanguard, iShares, State Street (SPDR funds), Invesco, Schwab, JPMorgan, ARK, ProShares, Direxion, VanEck, WisdomTree, First Trust, Fidelity, Dimensional, Pacer, Global X or Avantis"`
-	Query            string `json:"query,omitempty" jsonschema:"case-insensitive text matched against symbol and name, e.g. 'S&P 500' or 'treasury'"`
+	Query            string `json:"query,omitempty" jsonschema:"case-insensitive words, split at spaces and hyphens, that must all appear in the symbol, name, issuer or note, e.g. 'S&P 500', 'treasury' or 'nasdaq 100'"`
 	IncludeLeveraged bool   `json:"include_leveraged,omitempty" jsonschema:"include leveraged and inverse funds (default false); set automatically when category is 'Leveraged / Inverse'"`
 }
 
@@ -33,6 +33,7 @@ type listETFsOutput struct {
 	Count      int      `json:"count"`
 	Categories []string `json:"categories"`
 	ETFs       []etfRow `json:"etfs"`
+	Notes      []string `json:"notes,omitempty"`
 }
 
 func registerListETFs(s *mcp.Server) {
@@ -71,7 +72,11 @@ func listETFs(in listETFsInput) (listETFsOutput, error) {
 	for _, e := range etfs {
 		rows = append(rows, toRow(e))
 	}
-	return listETFsOutput{Count: len(rows), Categories: categories, ETFs: rows}, nil
+	out := listETFsOutput{Count: len(rows), Categories: categories, ETFs: rows}
+	if len(rows) == 0 {
+		out.Notes = append(out.Notes, "nothing in the built-in universe matches; try fewer words, a category from categories, or search_symbols for any fund Yahoo knows")
+	}
+	return out, nil
 }
 
 // issuers returns the distinct issuers in order of first appearance,

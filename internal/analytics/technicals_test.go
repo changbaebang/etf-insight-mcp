@@ -312,7 +312,7 @@ func TestComputeTechnicalsValues(t *testing.T) {
 		t.Fatalf("AsOf = %v, want %v", tech.AsOf, s.Bars[59].Date)
 	}
 	for _, want := range []string{
-		"RSI 100 overbought",
+		"RSI 100.0 overbought",
 		"MACD above signal line",
 		"200-day average needs 200 bars, only 60 available; reported as 0",
 	} {
@@ -355,7 +355,7 @@ func TestComputeTechnicalsSignals(t *testing.T) {
 			name:     "monotone rise",
 			series:   growthSeries("UP", 300, 0.01),
 			macdSign: 1,
-			want:     []string{"RSI 100 overbought", "MACD above signal line", "close above 200-day average"},
+			want:     []string{"RSI 100.0 overbought", "MACD above signal line", "close above 200-day average"},
 			unwanted: []string{"crossed", "needs", "Bollinger"},
 		},
 		{
@@ -365,38 +365,38 @@ func TestComputeTechnicalsSignals(t *testing.T) {
 			name:     "exponential fall",
 			series:   growthSeries("DOWN", 300, -0.01),
 			macdSign: -1,
-			want:     []string{"RSI 0 oversold", "MACD above signal line", "close below 200-day average"},
+			want:     []string{"RSI 0.0 oversold", "MACD above signal line", "close below 200-day average"},
 			unwanted: []string{"crossed", "needs", "Bollinger"},
 		},
 		{
 			name:     "accelerating fall",
 			series:   accelerating,
 			macdSign: -1,
-			want:     []string{"RSI 0 oversold", "MACD below signal line", "close below 200-day average"},
+			want:     []string{"RSI 0.0 oversold", "MACD below signal line", "close below 200-day average"},
 			unwanted: []string{"crossed", "needs"},
 		},
 		{
 			name:   "spike above the upper band",
 			series: stepSeries("SPIKE", 30, 29, 100, 10),
-			want:   []string{"close above upper Bollinger band", "RSI 100 overbought"},
+			want:   []string{"close above upper Bollinger band", "RSI 100.0 overbought"},
 		},
 		{
 			name:   "drop below the lower band",
 			series: stepSeries("DROP", 30, 29, 100, -10),
-			want:   []string{"close below lower Bollinger band", "RSI 0 oversold"},
+			want:   []string{"close below lower Bollinger band", "RSI 0.0 oversold"},
 		},
 		{
 			// 250 flat bars then 120: SMA50 - SMA200 turns positive on bar
 			// 250 (100.4 vs 100.1), five bars before the anchor at 255.
 			name:   "golden cross five bars ago",
 			series: &market.Series{Meta: market.Meta{Symbol: "GOLD"}, Bars: stepSeries("GOLD", 300, 250, 100, 20).Bars[:256]},
-			want:   []string{"50-day average crossed above 200-day average 5 bars ago", "close above 200-day average", "RSI 100 overbought"},
+			want:   []string{"50-day average crossed above 200-day average 5 bars ago", "close above 200-day average", "RSI 100.0 overbought"},
 		},
 		{
 			// The mirror image: 250 bars at 120 then 100, anchored at 255.
 			name:   "death cross five bars ago",
 			series: &market.Series{Meta: market.Meta{Symbol: "DEATH"}, Bars: stepSeries("DEATH", 300, 250, 120, -20).Bars[:256]},
-			want:   []string{"50-day average crossed below 200-day average 5 bars ago", "close below 200-day average", "RSI 0 oversold"},
+			want:   []string{"50-day average crossed below 200-day average 5 bars ago", "close below 200-day average", "RSI 0.0 oversold"},
 		},
 		{
 			name:   "too short for everything",
@@ -525,4 +525,80 @@ func TestComputeTechnicalsAsOfAndErrors(t *testing.T) {
 			t.Fatalf("error must name the date: %v", err)
 		}
 	})
+}
+
+// TestComputeTechnicalsFlatBands: twenty identical closes collapse the
+// Bollinger bands onto the middle, where the close sits, so %B is 0.5
+// rather than the 0 that would mean "at the lower band".
+func TestComputeTechnicalsFlatBands(t *testing.T) {
+	s := seriesFrom("FLAT", weekdays(day(2020, time.January, 1), 30), func(i int, _ time.Time) float64 {
+		if i < 10 {
+			return 90 + float64(i)
+		}
+		return 100
+	})
+	tech, err := ComputeTechnicals(s, time.Time{})
+	if err != nil {
+		t.Fatalf("ComputeTechnicals: %v", err)
+	}
+	if tech.BollingerUpper != tech.BollingerLower || tech.BollingerPctB != 0.5 {
+		t.Errorf("bands %v..%v, %%B = %v; want collapsed bands and 0.5", tech.BollingerLower, tech.BollingerUpper, tech.BollingerPctB)
+	}
+}
+
+// TestRSISignalPrecision: a reading just beyond a threshold must not print
+// as the threshold itself.
+func TestRSISignalPrecision(t *testing.T) {
+	tests := map[float64]string{70.216: "RSI 70.2 overbought", 29.931: "RSI 29.9 oversold"}
+	for rsi, want := range tests {
+		ts := &techSeries{idx: 0, rsi: []float64{rsi}}
+		if got := ts.rsiSignals(); len(got) != 1 || got[0] != want {
+			t.Errorf("rsiSignals(%v) = %q, want %q", rsi, got, want)
+		}
+	}
+}
+
+// TestComputeTechnicalsNamesShortExponentialAverages: EMA12, EMA26 and the
+// MACD line are 0 on a short series and must be named like the others.
+func TestComputeTechnicalsNamesShortExponentialAverages(t *testing.T) {
+	tests := []struct {
+		bars     int
+		want     []string
+		unwanted []string
+	}{
+		{
+			bars: 10,
+			want: []string{
+				"12-day exponential average needs 12 bars, only 10 available; reported as 0",
+				"26-day exponential average needs 26 bars, only 10 available; reported as 0",
+				"MACD line needs 26 bars, only 10 available; reported as 0",
+			},
+		},
+		{
+			bars:     20,
+			want:     []string{"26-day exponential average needs 26 bars", "MACD line needs 26 bars"},
+			unwanted: []string{"12-day exponential average needs"},
+		},
+		{
+			bars:     30,
+			want:     []string{"MACD signal line needs 34 bars"},
+			unwanted: []string{"exponential average needs", "MACD line needs"},
+		},
+	}
+	for _, tt := range tests {
+		tech, err := ComputeTechnicals(growthSeries("NEW", tt.bars, 0.001), time.Time{})
+		if err != nil {
+			t.Fatalf("ComputeTechnicals: %v", err)
+		}
+		for _, w := range tt.want {
+			if !hasReason(tech.Signals, w) {
+				t.Errorf("%d bars: Signals %q lack %q", tt.bars, tech.Signals, w)
+			}
+		}
+		for _, u := range tt.unwanted {
+			if hasReason(tech.Signals, u) {
+				t.Errorf("%d bars: Signals %q must not mention %q", tt.bars, tech.Signals, u)
+			}
+		}
+	}
 }

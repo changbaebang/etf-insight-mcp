@@ -151,3 +151,30 @@ func TestMidPeriodStartNote(t *testing.T) {
 		t.Error("Mar 1 2024 is the first weekday of its month; no note expected")
 	}
 }
+
+func TestMidPeriodStartNoteAfterOpeningHoliday(t *testing.T) {
+	// With no earlier bar, a series that begins on the first trading day
+	// after a weekday holiday starts its period on time.
+	tests := []struct {
+		name  string
+		c     Cadence
+		start string
+		want  bool
+	}{
+		{"monthly after New Year's Day", Monthly, "2024-01-02", false},
+		{"weekly after New Year's Day", Weekly, "2024-01-02", false},
+		{"monthly after Labor Day", Monthly, "2024-09-03", false},
+		{"weekly after Labor Day", Weekly, "2024-09-03", false},
+		{"weekly two weekdays late", Weekly, "2024-09-04", true},
+		{"monthly two weekdays late", Monthly, "2024-01-03", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newSeries(t, "NEW", tt.start, 10, constant(1))
+			_, got := midPeriodStartNote(tt.c, s, date(t, tt.start))
+			if got != tt.want {
+				t.Errorf("midPeriodStartNote(%s, %s) = %v, want %v", tt.c, tt.start, got, tt.want)
+			}
+		})
+	}
+}

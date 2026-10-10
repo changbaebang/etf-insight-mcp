@@ -109,3 +109,81 @@ func TestGetETFInfo(t *testing.T) {
 		})
 	}
 }
+
+// warningWith returns the first warning containing want, or "".
+func warningWith(warnings []string, want string) string {
+	for _, w := range warnings {
+		if strings.Contains(w, want) {
+			return w
+		}
+	}
+	return ""
+}
+
+func TestGetETFInfoFlagsWhatTheFiguresMean(t *testing.T) {
+	src := newFakeSource()
+	flat := func(int) float64 { return 50 }
+	// About seven months of history with a dividend every month.
+	src.add(synthetic("YNG", "USD", "ETF", time.Date(2023, time.June, 1, 0, 0, 0, 0, time.UTC), 150, flat, 21, 0.4))
+	src.add(synthetic("^GSPC", "USD", "INDEX", seriesStart, 780, func(i int) float64 { return 3700 + float64(i) }, 0, 0))
+	sess := newSession(t, testDeps(src))
+
+	t.Run("young fund", func(t *testing.T) {
+		var out getETFInfoOutput
+		callOK(t, sess, "get_etf_info", map[string]any{"symbol": "YNG"}, &out)
+		w := warningWith(out.Warnings, "less than 52 weeks")
+		if w == "" {
+			t.Fatalf("warnings = %q, want one saying the trailing-year figures cover less than 52 weeks", out.Warnings)
+		}
+		for _, field := range []string{"ttm_dividend_yield_pct", "volatility_1y_pct", "max_drawdown_1y_pct"} {
+			if !strings.Contains(w, field) {
+				t.Errorf("warning %q does not name %s", w, field)
+			}
+		}
+	})
+
+	t.Run("young as of an early date", func(t *testing.T) {
+		var out getETFInfoOutput
+		callOK(t, sess, "get_etf_info", map[string]any{"symbol": "SPY", "as_of": "2021-09-01"}, &out)
+		if warningWith(out.Warnings, "less than 52 weeks") == "" {
+			t.Errorf("warnings = %q, want the short-history warning", out.Warnings)
+		}
+	})
+
+	t.Run("a full year is not flagged", func(t *testing.T) {
+		var out getETFInfoOutput
+		callOK(t, sess, "get_etf_info", map[string]any{"symbol": "SPY", "as_of": "2022-06-01"}, &out)
+		if len(out.Warnings) != 0 {
+			t.Errorf("warnings = %q, want none", out.Warnings)
+		}
+	})
+
+	t.Run("index", func(t *testing.T) {
+		var out getETFInfoOutput
+		callOK(t, sess, "get_etf_info", map[string]any{"symbol": "^gspc"}, &out)
+		if warningWith(out.Warnings, "is an index") == "" {
+			t.Errorf("warnings = %q, want the index caution", out.Warnings)
+		}
+	})
+
+	t.Run("as_of after the latest bar", func(t *testing.T) {
+		var out getETFInfoOutput
+		callOK(t, sess, "get_etf_info", map[string]any{"symbol": "SPY", "as_of": "2030-01-01"}, &out)
+		if out.Summary.AsOf != out.Data.LastDate {
+			t.Errorf("summary.as_of = %s, want the latest bar %s", out.Summary.AsOf, out.Data.LastDate)
+		}
+		if warningWith(out.Warnings, "after the latest bar") == "" {
+			t.Errorf("warnings = %q, want one saying as_of is after the latest bar", out.Warnings)
+		}
+	})
+
+	t.Run("old data is flagged when as_of is in the future", func(t *testing.T) {
+		deps := testDeps(src)
+		deps.Now = func() time.Time { return now.AddDate(0, 1, 0) }
+		var out getETFInfoOutput
+		callOK(t, newSession(t, deps), "get_etf_info", map[string]any{"symbol": "SPY", "as_of": "2030-01-01"}, &out)
+		if warningWith(out.Warnings, "days old") == "" {
+			t.Errorf("warnings = %q, want a 'days old' warning", out.Warnings)
+		}
+	})
+}

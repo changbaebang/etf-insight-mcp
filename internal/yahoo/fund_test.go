@@ -28,7 +28,7 @@ func TestQuote(t *testing.T) {
 	f := newFake(t)
 	c := newFakeClient(t, f)
 
-	quotes, err := c.Quote(context.Background(), []string{" spy", "qqq ", "ZZZZNOPE", "SPY", ""})
+	quotes, err := c.Quote(context.Background(), []string{" spy", "qqq ", "ZZZZNOPE", "SPY", "", "brk.b"})
 	if err != nil {
 		t.Fatalf("Quote: %v", err)
 	}
@@ -36,19 +36,27 @@ func TestQuote(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("quote requests = %d, want 1", len(reqs))
 	}
-	if got := reqs[0].query.Get("symbols"); got != "SPY,QQQ,ZZZZNOPE" {
-		t.Errorf("symbols param = %q, want normalised, de-duplicated SPY,QQQ,ZZZZNOPE", got)
+	if got := reqs[0].query.Get("symbols"); got != "SPY,QQQ,ZZZZNOPE,BRK.B" {
+		t.Errorf("symbols param = %q, want normalised, de-duplicated SPY,QQQ,ZZZZNOPE,BRK.B", got)
 	}
+	// The fixture answers BRK.B with the price-less stub Yahoo returns for
+	// a symbol it cannot quote (its ticker is BRK-B); it must be left out
+	// like the unknown ZZZZNOPE.
 	if got := quoteSymbols(quotes); !reflect.DeepEqual(got, []string{"SPY", "QQQ"}) {
-		t.Fatalf("quotes = %v, want SPY and QQQ only (unknown symbol absent)", got)
+		t.Fatalf("quotes = %v, want SPY and QQQ only (unknown symbol and price-less stub absent)", got)
 	}
 
+	// Yahoo's dividendYield is 0.99 (percent); the quote carries it as a
+	// fraction, divided at run time as the client does (0.99/100 is not
+	// exactly 0.0099 in floating point). The stale
+	// trailingAnnualDividendYield beside it is ignored.
+	spyYieldPct := 0.99
 	want := market.Quote{
 		Symbol: "SPY", Name: "State Street SPDR S&P 500 ETF Trust", Currency: "USD", Exchange: "NYSEArca",
 		MarketState: "PRE", Price: 773.93, Change: -3.28998, ChangePct: -0.423301, PreviousClose: 777.22,
 		Open: 774.86, DayLow: 770.435, DayHigh: 777.09, Volume: 40070358,
 		FiftyTwoWeekLow: 629.28, FiftyTwoWeekHigh: 781.62, FiftyDayAverage: 766.8368, TwoHundredDayAverage: 722.4597,
-		DividendYield: 0.0072849393, AsOf: time.Unix(1791489600, 0).UTC(),
+		DividendYield: spyYieldPct / 100, AsOf: time.Unix(1791489600, 0).UTC(),
 	}
 	if !reflect.DeepEqual(quotes[0], want) {
 		t.Errorf("SPY quote = %+v\nwant %+v", quotes[0], want)
@@ -207,7 +215,8 @@ func TestHoldings(t *testing.T) {
 					{Name: "a", Weight: 0.120799996}, {Name: "other", Weight: 0.00029999999}, {Name: "b", Weight: 0},
 					{Name: "bbb", Weight: 0.1225}, {Name: "below_b", Weight: 0}, {Name: "us_government", Weight: 0.5179},
 				},
-				StockPct: ptr(0), BondPct: ptr(0.9864), CashPct: ptr(0.0135), OtherPct: ptr(0),
+				// Other includes the 0.01% convertible position.
+				StockPct: ptr(0), BondPct: ptr(0.9864), CashPct: ptr(0.0135), OtherPct: ptr(0.0001),
 				EquityStats: nil, // all zero on a bond fund
 				BondStats:   map[string]float64{"maturity": 9.328},
 				FetchedAt:   fixtureNow,
@@ -236,6 +245,11 @@ func TestPerformance(t *testing.T) {
 	}
 	if got.Symbol != "SCHD" || !got.FetchedAt.Equal(fixtureNow) {
 		t.Errorf("symbol/fetchedAt = %s %v", got.Symbol, got.FetchedAt)
+	}
+	// The block's asOfDate is 2026-10-07; the returns are monthly figures
+	// measured to the month-end before it.
+	if want := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC); !got.AsOf.Equal(want) {
+		t.Errorf("AsOf = %v, want %v", got.AsOf, want)
 	}
 
 	wantTrailing := []market.PeriodReturn{
@@ -278,6 +292,202 @@ func TestPerformance(t *testing.T) {
 	}
 	if len(bnd.Risk) != 3 || bnd.Risk[0].Period != "3y" || *bnd.Risk[0].Beta != 0.98 {
 		t.Errorf("BND risk = %+v", bnd.Risk)
+	}
+}
+
+// summaryBody wraps one quoteSummary result object in the v10 envelope.
+func summaryBody(result string) []byte {
+	return []byte(`{"quoteSummary":{"result":[` + result + `],"error":null}}`)
+}
+
+// zeroRisk is the risk row Yahoo sends for a period it has no statistics
+// for.
+const zeroRisk = `"alpha":{"raw":0.0},"beta":{"raw":0.0},"meanAnnualReturn":{"raw":0.0},"rSquared":{"raw":0.0},"stdDev":{"raw":0.0},"sharpeRatio":{"raw":0.0},"treynorRatio":{"raw":0.0}`
+
+func TestPerformanceTreatsZeroPaddingAsNotReported(t *testing.T) {
+	asOf := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+	// Category returns as Yahoo reports them for JEPQ, reused below.
+	const cat = `"trailingReturnsCat":{"ytd":{"raw":0.019582601},"oneMonth":{"raw":0.0759982},"threeMonth":{"raw":0.012133401},
+		"oneYear":{"raw":0.24173929},"threeYear":{"raw":0.1335141},"fiveYear":{"raw":0.081856206},"tenYear":{"raw":0.08246431},
+		"lastBullMkt":{"raw":0.0},"lastBearMkt":{"raw":0.0}}`
+	wantCat := []float64{0.019582601, 0.0759982, 0.012133401, 0.24173929, 0.1335141, 0.081856206, 0.08246431}
+	periods := []string{"ytd", "1m", "3m", "1y", "3y", "5y", "10y"}
+
+	tests := []struct {
+		name        string
+		result      string
+		wantFund    []*float64 // per period, in contract order
+		wantCat     []float64  // nil means every category value is nil
+		wantPeriods []string   // risk periods kept
+	}{
+		{
+			// JEPQ, launched 2022-05-03: zeros for 5y and 10y and all-zero
+			// risk rows for both.
+			name: "young fund",
+			result: `{"defaultKeyStatistics":{"fundInceptionDate":{"raw":1651536000}},"fundPerformance":{
+				"trailingReturns":{"asOfDate":{"raw":1791417600,"fmt":"2026-10-08"},"ytd":{"raw":0.1419387},"oneMonth":{"raw":0.0291048},
+					"threeMonth":{"raw":0.0302435},"oneYear":{"raw":0.1945937},"threeYear":{"raw":0.2184934},"fiveYear":{"raw":0.0},"tenYear":{"raw":0.0},
+					"lastBullMkt":{"raw":0.0},"lastBearMkt":{"raw":0.0}},` + cat + `,
+				"riskOverviewStatistics":{"riskStatistics":[{"year":"5y",` + zeroRisk + `},
+					{"year":"3y","alpha":{"raw":2.39},"beta":{"raw":0.8},"meanAnnualReturn":{"raw":1.71},"rSquared":{"raw":78.53},"stdDev":{"raw":11.22},"sharpeRatio":{"raw":1.43},"treynorRatio":{"raw":21.51}},
+					{"year":"10y",` + zeroRisk + `}]}}}`,
+			wantFund:    []*float64{ptr(0.1419387), ptr(0.0291048), ptr(0.0302435), ptr(0.1945937), ptr(0.2184934), nil, nil},
+			wantCat:     wantCat,
+			wantPeriods: []string{"3y"},
+		},
+		{
+			// DFAC: every fund figure is 0.0.
+			name: "whole fund block padded",
+			result: `{"defaultKeyStatistics":{"fundInceptionDate":{"raw":1790899200}},"fundPerformance":{
+				"trailingReturns":{"asOfDate":{"raw":1791417600},"ytd":{"raw":0.0},"oneMonth":{"raw":0.0},"threeMonth":{"raw":0.0},
+					"oneYear":{"raw":0.0},"threeYear":{"raw":0.0},"fiveYear":{"raw":0.0},"tenYear":{"raw":0.0}},` + cat + `}}`,
+			wantFund: make([]*float64, 7),
+			wantCat:  wantCat,
+		},
+		{
+			// SCHF (2009): a single 0.0 among real figures; its price history
+			// gives -0.83% for that quarter.
+			name: "one fund figure padded",
+			result: `{"defaultKeyStatistics":{"fundInceptionDate":{"raw":1257206400}},"fundPerformance":{
+				"trailingReturns":{"asOfDate":{"raw":1791417600},"ytd":{"raw":0.1505502},"oneMonth":{"raw":-0.0271893},"threeMonth":{"raw":0.0},
+					"oneYear":{"raw":0.22252701},"threeYear":{"raw":0.2102182},"fiveYear":{"raw":0.1059139},"tenYear":{"raw":0.0992677}},` + cat + `}}`,
+			wantFund: []*float64{ptr(0.1505502), ptr(-0.0271893), nil, ptr(0.22252701), ptr(0.2102182), ptr(0.1059139), ptr(0.0992677)},
+			wantCat:  wantCat,
+		},
+		{
+			// TQQQ: no category average, every category figure is 0.0.
+			name: "whole category block padded",
+			result: `{"defaultKeyStatistics":{"fundInceptionDate":{"raw":1265673600}},"fundPerformance":{
+				"trailingReturns":{"asOfDate":{"raw":1791417600},"ytd":{"raw":0.4882345},"oneMonth":{"raw":0.085713394},"threeMonth":{"raw":-0.0375174},
+					"oneYear":{"raw":0.5185063},"threeYear":{"raw":0.65371233},"fiveYear":{"raw":0.2141866},"tenYear":{"raw":0.40809423}},
+				"trailingReturnsCat":{"ytd":{"raw":0.0},"oneMonth":{"raw":0.0},"threeMonth":{"raw":0.0},"oneYear":{"raw":0.0},
+					"threeYear":{"raw":0.0},"fiveYear":{"raw":0.0},"tenYear":{"raw":0.0}}}}`,
+			wantFund: []*float64{ptr(0.4882345), ptr(0.085713394), ptr(-0.0375174), ptr(0.5185063), ptr(0.65371233), ptr(0.2141866), ptr(0.40809423)},
+		},
+		{
+			// A figure for a period longer than the fund has existed cannot be
+			// the fund's own, zero or not; neither can a risk row for it.
+			// A zero beta among real statistics is kept (T-bill funds).
+			name: "periods longer than the fund's age",
+			result: `{"defaultKeyStatistics":{"fundInceptionDate":{"raw":1651536000}},"fundPerformance":{
+				"trailingReturns":{"asOfDate":{"raw":1791417600},"threeYear":{"raw":0.2},"fiveYear":{"raw":0.05},"tenYear":{"raw":0.07}},
+				"riskOverviewStatistics":{"riskStatistics":[{"year":"3y","alpha":{"raw":-0.08},"beta":{"raw":0.0},"stdDev":{"raw":0.22}},
+					{"year":"5y","alpha":{"raw":1.0},"beta":{"raw":0.9},"stdDev":{"raw":12.0}}]}}}`,
+			wantFund:    []*float64{nil, nil, nil, nil, ptr(0.2), nil, nil},
+			wantPeriods: []string{"3y"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseQuoteSummary(summaryBody(tt.result))
+			if err != nil {
+				t.Fatalf("parseQuoteSummary: %v", err)
+			}
+			p := (&fundSummary{result: result, fetchedAt: fixtureNow}).performance("X")
+			if !p.AsOf.Equal(asOf) {
+				t.Errorf("AsOf = %v, want %v", p.AsOf, asOf)
+			}
+			var want []market.PeriodReturn
+			for i, period := range periods {
+				row := market.PeriodReturn{Period: period, Fund: tt.wantFund[i]}
+				if tt.wantCat != nil {
+					row.Category = ptr(tt.wantCat[i])
+				}
+				if row.Fund != nil || row.Category != nil {
+					want = append(want, row)
+				}
+			}
+			if !reflect.DeepEqual(p.Trailing, want) {
+				t.Errorf("Trailing = %s\nwant %s", formatTrailing(p.Trailing), formatTrailing(want))
+			}
+			var gotPeriods []string
+			for _, r := range p.Risk {
+				gotPeriods = append(gotPeriods, r.Period)
+			}
+			if !reflect.DeepEqual(gotPeriods, tt.wantPeriods) {
+				t.Errorf("risk periods = %v, want %v", gotPeriods, tt.wantPeriods)
+			}
+		})
+	}
+}
+
+// formatTrailing renders trailing rows with their values rather than
+// pointer addresses, for failure messages.
+func formatTrailing(rows []market.PeriodReturn) string {
+	show := func(v *float64) string {
+		if v == nil {
+			return "nil"
+		}
+		return fmt.Sprint(*v)
+	}
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, fmt.Sprintf("%s fund=%s cat=%s", r.Period, show(r.Fund), show(r.Category)))
+	}
+	return "[" + strings.Join(parts, "; ") + "]"
+}
+
+func TestHoldingsPaddingAndPositions(t *testing.T) {
+	// JEPQ's equity-linked notes are reported as a convertible position and
+	// TQQQ's price-to-earnings figure is a 0.0 placeholder.
+	result, err := parseQuoteSummary(summaryBody(`{"topHoldings":{
+		"stockPosition":{"raw":0.8273},"bondPosition":{"raw":0.0},"cashPosition":{"raw":0.0179},"otherPosition":{"raw":0.0},
+		"preferredPosition":{"raw":0.0},"convertiblePosition":{"raw":0.1549},
+		"equityHoldings":{"priceToEarnings":{"raw":0.0},"priceToBook":{"raw":0.11228},"priceToSales":{"raw":0.15567},
+			"priceToCashflow":{"raw":0.04395},"medianMarketCap":{}}}}`))
+	if err != nil {
+		t.Fatalf("parseQuoteSummary: %v", err)
+	}
+	h := (&fundSummary{result: result, fetchedAt: fixtureNow}).holdings("X")
+	if h.OtherPct == nil || *h.OtherPct != 0.1549 {
+		t.Errorf("OtherPct = %v, want 0.1549 (other + preferred + convertible)", h.OtherPct)
+	}
+	wantStats := map[string]float64{"priceToBook": 0.11228, "priceToSales": 0.15567, "priceToCashflow": 0.04395}
+	if !reflect.DeepEqual(h.EquityStats, wantStats) {
+		t.Errorf("EquityStats = %v, want %v (the 0.0 price-to-earnings left out)", h.EquityStats, wantStats)
+	}
+
+	// Without any of the three positions, other stays unreported.
+	result, err = parseQuoteSummary(summaryBody(`{"topHoldings":{"stockPosition":{"raw":1.0}}}`))
+	if err != nil {
+		t.Fatalf("parseQuoteSummary: %v", err)
+	}
+	if h := (&fundSummary{result: result}).holdings("X"); h.OtherPct != nil {
+		t.Errorf("OtherPct = %v, want nil when no position is reported", *h.OtherPct)
+	}
+}
+
+func TestSummaryConcurrentCallsShareOneRequest(t *testing.T) {
+	f := newFake(t)
+	f.summaryGate = make(chan struct{})
+	f.summaryArrived = make(chan struct{}, 8)
+	c := newFakeClient(t, f)
+
+	calls := []func(context.Context) error{
+		func(ctx context.Context) error { _, err := c.FundProfile(ctx, "SCHD"); return err },
+		func(ctx context.Context) error { _, err := c.Holdings(ctx, "SCHD"); return err },
+		func(ctx context.Context) error { _, err := c.Performance(ctx, "SCHD"); return err },
+	}
+	errs := make(chan error, len(calls))
+	for _, call := range calls {
+		go func() { errs <- call(context.Background()) }()
+	}
+	select {
+	case <-f.summaryArrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no quoteSummary request arrived")
+	}
+	// Give the other two calls time to send requests of their own, if they
+	// would, before the first response is released.
+	time.Sleep(100 * time.Millisecond)
+	close(f.summaryGate)
+	for range calls {
+		if err := <-errs; err != nil {
+			t.Errorf("call: %v", err)
+		}
+	}
+	if got := len(f.requests(summaryPath)); got != 1 {
+		t.Errorf("quoteSummary requests = %d, want 1 shared by three concurrent cold calls", got)
 	}
 }
 

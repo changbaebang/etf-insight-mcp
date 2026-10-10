@@ -1,6 +1,7 @@
 package analytics
 
 import (
+	"context"
 	"errors"
 	"math"
 	"reflect"
@@ -281,13 +282,23 @@ func TestMonteCarloLookback(t *testing.T) {
 		t.Fatalf("full lookback = %v..%v, want %v..%v", full.LookbackFrom, full.LookbackTo, s.Bars[0].Date, last.Date)
 	}
 
+	// A lookback year is 252 daily returns, the same year the horizon
+	// uses, so one year always meets the one-year minimum whatever the
+	// holidays: 253 bars, the last 252 returns.
 	oneYear, err := MonteCarlo(basePlan("A"), MCConfig{Simulations: 10, LookbackYears: 1}, in)
 	if err != nil {
 		t.Fatalf("MonteCarlo: %v", err)
 	}
-	earliest, latest := last.Date.AddDate(0, 0, -366), last.Date.AddDate(0, 0, -362)
-	if oneYear.LookbackFrom.Before(earliest) || oneYear.LookbackFrom.After(latest) {
-		t.Fatalf("1y lookback from = %v, want within %v..%v", oneYear.LookbackFrom, earliest, latest)
+	if want := s.Bars[s.Len()-253].Date; !oneYear.LookbackFrom.Equal(want) || !oneYear.LookbackTo.Equal(last.Date) {
+		t.Fatalf("1y lookback = %v..%v, want %v..%v", oneYear.LookbackFrom, oneYear.LookbackTo, want, last.Date)
+	}
+	if !hasReason(oneYear.Assumptions, "(253 trading days)") {
+		t.Errorf("Assumptions = %q, want the 253 trading days of the lookback", oneYear.Assumptions)
+	}
+
+	_, err = MonteCarlo(basePlan("A"), MCConfig{Simulations: 10, LookbackYears: 0.5}, in)
+	if !errors.Is(err, ErrInsufficientHistory) || !strings.Contains(err.Error(), "lookback") {
+		t.Fatalf("half-year lookback: error = %v, want ErrInsufficientHistory naming the lookback", err)
 	}
 	if oneYear.Percentiles["p50"] == full.Percentiles["p50"] {
 		t.Fatalf("lookback must change the resampled history")
@@ -445,5 +456,94 @@ func TestCadencePeriod(t *testing.T) {
 		if err != nil && !strings.Contains(err.Error(), string(tt.cadence)) {
 			t.Errorf("error %v should name the cadence", err)
 		}
+	}
+}
+
+// TestMonteCarloOverrideAppliesToEveryHolding: without volatility a 50/50
+// plan of a rising and a flat asset must compound at exactly the target,
+// like a single holding. The plan never rebalances, so a shift tuned for
+// the basket would let the stronger asset take over and overshoot.
+func TestMonteCarloOverrideAppliesToEveryHolding(t *testing.T) {
+	in := MCInput{Series: map[string]*market.Series{
+		"A": growthSeries("A", 300, 0.0006),
+		"B": growthSeries("B", 300, 0),
+	}}
+	target := math.Log(1.07)
+	plan := MCPlan{Symbols: []string{"A", "B"}, Weights: []float64{0.5, 0.5}, Amount: 100,
+		Currency: CurrencyUSD, Cadence: CadenceMonthly, HorizonYears: 20}
+	res, err := MonteCarlo(plan, MCConfig{Simulations: 20, ExpectedAnnualReturn: &target}, in)
+	if err != nil {
+		t.Fatalf("MonteCarlo: %v", err)
+	}
+	want := deterministicFinal(100, target/tradingDaysPerYear, 20*tradingDaysPerYear, 21)
+	if !approxRel(res.Percentiles["p50"], want, 1e-9) {
+		t.Errorf("p50 = %v, want %v (7%% compound growth for the whole plan)", res.Percentiles["p50"], want)
+	}
+	if !hasReason(res.Assumptions, "every holding's expected compound annual growth in USD is 7.00%") {
+		t.Errorf("Assumptions = %q, want the override stated per holding", res.Assumptions)
+	}
+}
+
+// TestMonteCarloRequiresOneYearOfHistory: a few months of history must not
+// be compounded over a long horizon, so MonteCarlo refuses fewer than 252
+// common daily returns and names the symbol that limits them.
+func TestMonteCarloRequiresOneYearOfHistory(t *testing.T) {
+	old := growthSeries("OLD", 600, 0.0003)
+	plan := MCPlan{Symbols: []string{"OLD", "NEW"}, Amount: 100, Cadence: CadenceMonthly, HorizonYears: 20}
+	young := func(bars int) *market.Series {
+		return &market.Series{Meta: market.Meta{Symbol: "NEW", Currency: "USD"}, Bars: growthSeries("NEW", 600, 0.001).Bars[600-bars:]}
+	}
+
+	_, err := MonteCarlo(plan, MCConfig{}, MCInput{Series: map[string]*market.Series{"OLD": old, "NEW": young(117)}})
+	if !errors.Is(err, ErrInsufficientHistory) {
+		t.Fatalf("117 common bars: error = %v, want ErrInsufficientHistory", err)
+	}
+	for _, want := range []string{"116 daily returns", "at least 252", "NEW"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+
+	res, err := MonteCarlo(plan, MCConfig{Simulations: 10}, MCInput{Series: map[string]*market.Series{"OLD": old, "NEW": young(253)}})
+	if err != nil {
+		t.Fatalf("253 common bars (252 returns) must be enough: %v", err)
+	}
+	if want := old.Bars[600-253].Date; !res.LookbackFrom.Equal(want) {
+		t.Errorf("LookbackFrom = %v, want %v", res.LookbackFrom, want)
+	}
+}
+
+func TestMonteCarloContextCancelled(t *testing.T) {
+	in := MCInput{Series: map[string]*market.Series{"A": growthSeries("A", 300, 0.0004)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := MonteCarloContext(ctx, basePlan("A"), MCConfig{Simulations: 500}, in)
+	if !errors.Is(err, context.Canceled) || res != nil {
+		t.Fatalf("MonteCarloContext = %v, %v; want no result and context.Canceled", res, err)
+	}
+}
+
+// TestFeedStopsWhenCancelled: once the context is done, feed must stop
+// handing out paths and close the channel even though nobody receives.
+func TestFeedStopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	jobs := make(chan int)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		feed(ctx, jobs, 1000)
+	}()
+	if i := <-jobs; i != 0 {
+		t.Fatalf("first job = %d, want 0", i)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("feed still blocked 5 s after the context was cancelled")
+	}
+	if _, ok := <-jobs; ok {
+		t.Fatal("jobs must be closed after cancellation")
 	}
 }

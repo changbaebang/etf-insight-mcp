@@ -389,6 +389,60 @@ func TestFundStoreQuoteStaleOnError(t *testing.T) {
 	}
 }
 
+func TestFundStoreQuoteReport(t *testing.T) {
+	fs, f := newFundStore(t)
+	ctx := context.Background()
+	if _, err := fs.Quote(ctx, []string{"SPY", "VOO"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A healthy source: nothing stale or failed, unknown symbols omitted.
+	fs.now = func() time.Time { return t0.Add(time.Hour) }
+	r, err := fs.QuoteReport(ctx, []string{"SPY", "UNKNOWN1"})
+	if err != nil || r.Err != nil || len(r.Stale) != 0 || len(r.Failed) != 0 {
+		t.Fatalf("healthy report = %+v, %v; want no stale or failed symbols", r, err)
+	}
+	if syms := quoteSymbols(r.Quotes); !slices.Equal(syms, []string{"SPY"}) {
+		t.Errorf("quotes = %v, want SPY only", syms)
+	}
+
+	// Six hours after the last fetch the source fails: VOO and SPY come
+	// from memory with their age, QQQ was never fetched so it failed.
+	f.setErr(errUpstream)
+	fs.now = func() time.Time { return t0.Add(6 * time.Hour) }
+	r, err = fs.QuoteReport(ctx, []string{"VOO", "QQQ", "SPY"})
+	if err != nil {
+		t.Fatalf("QuoteReport = %v, want the failure inside the report", err)
+	}
+	if syms := quoteSymbols(r.Quotes); !slices.Equal(syms, []string{"VOO", "SPY"}) {
+		t.Errorf("quotes = %v, want the remembered VOO and SPY", syms)
+	}
+	want := []StaleQuote{
+		{Symbol: "VOO", FetchedAt: t0, Age: 6 * time.Hour},
+		{Symbol: "SPY", FetchedAt: t0.Add(time.Hour), Age: 5 * time.Hour},
+	}
+	if !slices.Equal(r.Stale, want) {
+		t.Errorf("stale = %+v, want %+v", r.Stale, want)
+	}
+	if !slices.Equal(r.Failed, []string{"QQQ"}) || !errors.Is(r.Err, errUpstream) {
+		t.Errorf("failed/err = %v/%v, want [QQQ] and the upstream error", r.Failed, r.Err)
+	}
+
+	// Nothing in memory: an empty report carrying the failure, while
+	// Quote, which has no report, returns the error.
+	r, err = fs.QuoteReport(ctx, []string{"QQQ"})
+	if err != nil || len(r.Quotes) != 0 || !slices.Equal(r.Failed, []string{"QQQ"}) || !errors.Is(r.Err, errUpstream) {
+		t.Errorf("report without memory = %+v, %v", r, err)
+	}
+	if _, err := fs.Quote(ctx, []string{"QQQ"}); !errors.Is(err, errUpstream) {
+		t.Errorf("Quote without memory = %v, want the upstream error", err)
+	}
+
+	if _, err := fs.QuoteReport(ctx, []string{"sp y"}); !errors.Is(err, ErrInvalidSymbol) {
+		t.Errorf("invalid symbol error = %v, want ErrInvalidSymbol", err)
+	}
+}
+
 func TestFundStorePassThrough(t *testing.T) {
 	fs, f := newFundStore(t)
 	ctx := context.Background()

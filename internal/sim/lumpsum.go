@@ -43,9 +43,10 @@ type LumpSumResult struct {
 // range) and the lump-sum leg is p with cadence Once and Amount =
 // totalAmount, so both legs invest totalAmount on the same trading
 // calendar with the same currency, fees, dividend model and calendar
-// symbols; the fixed commission is therefore paid once by the lump sum
-// and once per contribution by the DCA leg. p.Cadence must be recurring:
-// Once is rejected because the two legs would be the same plan.
+// symbols. The fixed commission is charged per ETF purchased, so the lump
+// sum pays it once per allocation and the DCA leg once per allocation on
+// every contribution day. p.Cadence must be recurring: Once is rejected
+// because the two legs would be the same plan.
 func RunLumpSumVsDCA(p Plan, in Input, totalAmount float64) (*LumpSumResult, error) {
 	if !positiveFinite(totalAmount) {
 		return nil, fmt.Errorf("sim: total amount must be > 0, got %v", totalAmount)
@@ -124,8 +125,17 @@ func legNotes(dcaPlan Plan, dca, lump *Result) []string {
 		"Diff is lump sum minus DCA: positive means investing everything on the first day did better",
 	}
 	if dcaPlan.FeeFixed > 0 {
-		notes = append(notes, fmt.Sprintf("the fixed commission of %.2f %s is paid once by the lump sum (fees %.2f) and %d times by the DCA leg (fees %.2f)",
-			dcaPlan.FeeFixed, dcaPlan.Currency, lump.Fees, dca.Contributions, dca.Fees))
+		orders := len(dcaPlan.Allocations)
+		notes = append(notes, fmt.Sprintf("the fixed commission of %.2f %s, charged per ETF purchased, is paid %s by the lump sum (fees %.2f) and %s by the DCA leg (fees %.2f)",
+			dcaPlan.FeeFixed, dcaPlan.Currency, times(orders), lump.Fees, times(dca.Contributions*orders), dca.Fees))
 	}
 	return notes
+}
+
+// times renders a count of occurrences: "once", "2 times".
+func times(n int) string {
+	if n == 1 {
+		return "once"
+	}
+	return fmt.Sprintf("%d times", n)
 }

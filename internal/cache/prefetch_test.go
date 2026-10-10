@@ -5,15 +5,27 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/changbaebang/etf-insight-mcp/internal/market"
 )
 
-func TestPrefetchRespectsConcurrencyLimit(t *testing.T) {
+// prefetchResult is what one Store.Prefetch call returned.
+type prefetchResult struct {
+	series map[string]*market.Series
+	errs   map[string]error
+}
+
+func TestStorePrefetchRespectsConcurrencyLimit(t *testing.T) {
 	const limit = 2
-	f := &fakeSource{gate: make(chan struct{})}
+	s, f := newStore(t, time.Hour)
+	f.gate = make(chan struct{})
 	symbols := []string{"A", "B", "C", "D", "E"}
 
-	result := make(chan map[string]error, 1)
-	go func() { result <- Prefetch(context.Background(), f, symbols, limit) }()
+	result := make(chan prefetchResult, 1)
+	go func() {
+		series, errs := s.Prefetch(context.Background(), symbols, limit)
+		result <- prefetchResult{series, errs}
+	}()
 
 	waitFor(t, "the limit to be reached", func() bool { return f.inflight.Load() == limit })
 	if got := f.maxInflight.Load(); got != limit {
@@ -22,9 +34,9 @@ func TestPrefetchRespectsConcurrencyLimit(t *testing.T) {
 	close(f.gate)
 
 	select {
-	case errs := <-result:
-		if len(errs) != 0 {
-			t.Errorf("errors = %v, want none", errs)
+	case r := <-result:
+		if len(r.errs) != 0 || len(r.series) != len(symbols) {
+			t.Errorf("series = %d, errors = %v; want %d and none", len(r.series), r.errs, len(symbols))
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Prefetch did not return")
@@ -37,32 +49,15 @@ func TestPrefetchRespectsConcurrencyLimit(t *testing.T) {
 	}
 }
 
-func TestPrefetchReportsPerSymbolErrors(t *testing.T) {
-	errB := errors.New("b broke")
-	errD := errors.New("d broke")
-	f := &fakeSource{failFor: map[string]error{"B": errB, "D": errD}}
-
-	errs := Prefetch(context.Background(), f, []string{"A", "B", "C", "D"}, 4)
-	if len(errs) != 2 {
-		t.Fatalf("errors = %v, want exactly B and D", errs)
-	}
-	if !errors.Is(errs["B"], errB) || !errors.Is(errs["D"], errD) {
-		t.Errorf("errors = %v, want B->%v D->%v", errs, errB, errD)
-	}
-	if f.count() != 4 {
-		t.Errorf("calls = %d, want 4", f.count())
-	}
-}
-
-func TestPrefetchStopsWhenContextDone(t *testing.T) {
-	f := &fakeSource{}
+func TestStorePrefetchStopsWhenContextDone(t *testing.T) {
+	s, f := newStore(t, time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	symbols := []string{"A", "B", "C"}
-	errs := Prefetch(ctx, f, symbols, 2)
-	if f.count() != 0 {
-		t.Errorf("calls = %d, want 0 after cancellation", f.count())
+	series, errs := s.Prefetch(ctx, symbols, 2)
+	if f.count() != 0 || len(series) != 0 {
+		t.Errorf("calls = %d, series = %d; want none after cancellation", f.count(), len(series))
 	}
 	for _, sym := range symbols {
 		if !errors.Is(errs[sym], context.Canceled) {
@@ -71,7 +66,7 @@ func TestPrefetchStopsWhenContextDone(t *testing.T) {
 	}
 }
 
-func TestPrefetchEdgeCases(t *testing.T) {
+func TestStorePrefetchEdgeCases(t *testing.T) {
 	tests := []struct {
 		name        string
 		symbols     []string
@@ -80,12 +75,12 @@ func TestPrefetchEdgeCases(t *testing.T) {
 	}{
 		{"no symbols", nil, 2, 0},
 		{"concurrency below one is clamped", []string{"A", "B"}, 0, 2},
-		{"duplicates are fetched each time", []string{"A", "A"}, 1, 2},
+		{"a duplicate is served from the file the first fetch wrote", []string{"A", "A"}, 1, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := &fakeSource{}
-			errs := Prefetch(context.Background(), f, tt.symbols, tt.concurrency)
+			s, f := newStore(t, time.Hour)
+			_, errs := s.Prefetch(context.Background(), tt.symbols, tt.concurrency)
 			if len(errs) != 0 {
 				t.Errorf("errors = %v, want none", errs)
 			}
@@ -96,24 +91,5 @@ func TestPrefetchEdgeCases(t *testing.T) {
 				t.Errorf("max in flight = %d exceeds limit", f.maxInflight.Load())
 			}
 		})
-	}
-}
-
-func TestPrefetchWarmsStore(t *testing.T) {
-	s, f := newStore(t, time.Hour)
-	symbols := []string{"SPY", "QQQ", "KRW=X"}
-	if errs := Prefetch(context.Background(), s, symbols, 3); len(errs) != 0 {
-		t.Fatalf("Prefetch errors = %v", errs)
-	}
-	if f.count() != len(symbols) {
-		t.Fatalf("calls = %d, want %d", f.count(), len(symbols))
-	}
-	for _, sym := range symbols {
-		if _, err := s.Series(context.Background(), sym); err != nil {
-			t.Errorf("Series(%s) after Prefetch: %v", sym, err)
-		}
-	}
-	if f.count() != len(symbols) {
-		t.Errorf("warm reads hit the source: calls = %d", f.count())
 	}
 }

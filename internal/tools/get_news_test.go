@@ -54,3 +54,12 @@ func TestGetNews(t *testing.T) {
 		})
 	}
 }
+
+func TestGetNewsNonLatinQuery(t *testing.T) {
+	sess, _, _ := newDataSession(t)
+	callErr(t, sess, "get_news", map[string]any{"query": "미국 배당"}, "Latin")
+	out := callRaw(t, sess, "get_news", map[string]any{"query": "미국 ETF"})
+	if !hasDataNote(rawStrings(out["notes"]), "ignores") {
+		t.Errorf("notes = %v, want a caution that the non-Latin words are ignored", out["notes"])
+	}
+}

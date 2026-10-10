@@ -1,6 +1,7 @@
 package analytics
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -84,6 +85,10 @@ const (
 	MaxLookbackYears = 200
 	// MaxBlockLength caps MCConfig.BlockLength (ten trading years).
 	MaxBlockLength = 2520
+	// MinHistoryReturns is the shortest resampling history MonteCarlo
+	// accepts: one year of common daily returns. A few months of drift
+	// compounded over a long horizon would be meaningless.
+	MinHistoryReturns = tradingDaysPerYear
 	// weightTolerance is how far the weight sum may stray from 1.
 	weightTolerance = 1e-6
 )
@@ -126,19 +131,28 @@ type MCConfig struct {
 	// DefaultBlockLength. Drawing blocks of consecutive days instead of
 	// single days keeps autocorrelation and volatility clustering.
 	BlockLength int
-	// LookbackYears restricts the resampled history to the last N years of
-	// the common date range; 0 means all common history.
+	// LookbackYears restricts the resampled history to the last
+	// round(252 × N) daily returns of the common date range: N years of
+	// 252 trading days, the year the horizon is measured in too, so a
+	// one-year lookback always meets MinHistoryReturns. 0 means all
+	// common history.
 	LookbackYears float64
 	// Seed seeds the random number generators: 0 means DefaultSeed. Every
 	// path uses its own generator seeded with (Seed, path index), so the
 	// result is bit-for-bit reproducible regardless of scheduling.
 	Seed uint64
-	// ExpectedAnnualReturn optionally replaces the historical drift: every
-	// symbol's resampled daily log returns are shifted by one constant so
-	// that the weighted portfolio's mean annual log return equals this
-	// value (a fraction, e.g. 0.07). It encodes an external assumption such
-	// as a broker's long-run forecast; nil uses history as is. The FX path,
-	// if any, is not shifted.
+	// ExpectedAnnualReturn optionally replaces the historical drift with a
+	// mean annual log return (e.g. math.Log(1.07) for 7% compound growth).
+	// Each symbol's resampled daily log returns are shifted by a constant
+	// of its own so that its mean daily log return over the lookback is
+	// this value / 252. Every holding is then expected to compound at the
+	// target, so a mix of holdings does too, whatever the weights and even
+	// though the plan never rebalances: exactly without volatility, and
+	// slightly above the target when holdings that move differently
+	// diversify each other. Volatility, correlations and the order of
+	// returns are kept. It encodes an external assumption such as a
+	// broker's long-run forecast; nil uses history as is. The FX path, if
+	// any, is not shifted.
 	ExpectedAnnualReturn *float64
 }
 
@@ -175,7 +189,8 @@ type MCResult struct {
 	MeanFinal float64
 	// HistoricalAnnualReturn is exp(252 * mean daily log return) - 1 and
 	// HistoricalVolatility the annualized standard deviation, both of the
-	// weighted portfolio's daily log returns over the lookback, as fractions.
+	// weighted portfolio's daily log returns over the lookback (at least
+	// one year, see MinHistoryReturns), as fractions.
 	HistoricalAnnualReturn, HistoricalVolatility float64
 	// LookbackFrom and LookbackTo bound the resampled history.
 	LookbackFrom, LookbackTo time.Time
@@ -204,8 +219,23 @@ type MCResult struct {
 //
 // Errors wrap ErrInvalidInput for bad plan or config values and a missing
 // or invalid series, and ErrInsufficientHistory when the common history
-// is shorter than BlockLength + 1 days.
+// (after the lookback) holds fewer than MinHistoryReturns daily returns or
+// fewer than BlockLength; the message names the lookback or the series
+// whose history starts last.
+//
+// MonteCarlo cannot be cancelled; it is MonteCarloContext with
+// context.Background().
 func MonteCarlo(p MCPlan, cfg MCConfig, in MCInput) (*MCResult, error) {
+	return MonteCarloContext(context.Background(), p, cfg, in)
+}
+
+// MonteCarloContext is MonteCarlo that stops early when ctx is done: no
+// new path starts after that, the paths already running finish, and it
+// returns ctx.Err() instead of a result.
+func MonteCarloContext(ctx context.Context, p MCPlan, cfg MCConfig, in MCInput) (*MCResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	plan, err := normalizePlan(p)
 	if err != nil {
 		return nil, err
@@ -218,7 +248,10 @@ func MonteCarlo(p MCPlan, cfg MCConfig, in MCInput) (*MCResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	finals := runPaths(plan, cfg, h)
+	finals, err := runPaths(ctx, plan, cfg, h)
+	if err != nil {
+		return nil, err
+	}
 	return collect(plan, cfg, h, finals), nil
 }
 
@@ -354,15 +387,16 @@ type history struct {
 	// real FX close (1 for USD plans).
 	startPrices []float64
 	startFX     float64
-	// shift is added to every symbol's daily log return (0 without the
-	// expected-return override).
-	shift float64
+	// shifts[i] is added to every daily log return of symbol i: 0 without
+	// the expected-return override, and with it the constant that moves
+	// the symbol's mean daily log return to the target / 252.
+	shifts []float64
 	// meanDaily and stdevDaily describe the plan's daily log return in the
 	// plan currency before the shift: the daily-rebalanced basket
 	// log(Σ wᵢ·exp(rᵢ)) plus, for KRW plans, the FX log return.
 	meanDaily, stdevDaily float64
 	// meanDailyUSD is the basket's mean daily log return without the FX
-	// leg; the override shift is defined against it.
+	// leg, which the override assumption quotes as the historical figure.
 	meanDailyUSD float64
 }
 
@@ -390,14 +424,16 @@ func buildHistory(plan planSpec, cfg MCConfig, in MCInput) (*history, error) {
 		series = append(series, in.FX)
 	}
 
-	dates := commonDates(series)
-	if cfg.LookbackYears > 0 && len(dates) > 0 {
-		cutoff := dates[len(dates)-1].AddDate(0, 0, -int(math.Round(cfg.LookbackYears*daysPerYear)))
-		dates = dates[sort.Search(len(dates), func(i int) bool { return !dates[i].Before(cutoff) }):]
+	common := commonDates(series)
+	dates := common
+	if cfg.LookbackYears > 0 {
+		// One date more than the round(252 × N) returns the lookback keeps.
+		if keep := int(math.Round(cfg.LookbackYears*tradingDaysPerYear)) + 1; keep < len(dates) {
+			dates = dates[len(dates)-keep:]
+		}
 	}
-	if cfg.BlockLength > len(dates)-1 {
-		return nil, fmt.Errorf("%w: %d common trading days, need at least %d (block length + 1)",
-			ErrInsufficientHistory, len(dates), cfg.BlockLength+1)
+	if need := max(MinHistoryReturns, cfg.BlockLength); len(dates)-1 < need {
+		return nil, shortHistoryError(series, common, dates, need)
 	}
 
 	h := &history{
@@ -406,6 +442,7 @@ func buildHistory(plan planSpec, cfg MCConfig, in MCInput) (*history, error) {
 		returns:     make([][]float64, len(plan.symbols)),
 		startPrices: make([]float64, len(plan.symbols)),
 		startFX:     1,
+		shifts:      make([]float64, len(plan.symbols)),
 	}
 	for i := range plan.symbols {
 		h.returns[i] = LogReturns(pricesOn(series[i], dates, adjClose))
@@ -421,9 +458,7 @@ func buildHistory(plan planSpec, cfg MCConfig, in MCInput) (*history, error) {
 	// The basket's daily log return is log(Σ wᵢ·exp(rᵢ)): what a portfolio
 	// rebalanced to the weights every day actually earns. The weighted sum
 	// Σ wᵢ·rᵢ of log returns understates it by about half the
-	// diversification variance, which would bias the historical figures
-	// and the override. Because log(Σ wᵢ·exp(rᵢ+s)) = s + log(Σ wᵢ·exp(rᵢ)),
-	// one additive shift s moves the basket's mean exactly.
+	// diversification variance, which would bias the historical figures.
 	basket := make([]float64, len(dates)-1)
 	portfolio := make([]float64, len(dates)-1)
 	for d := range basket {
@@ -440,10 +475,51 @@ func buildHistory(plan planSpec, cfg MCConfig, in MCInput) (*history, error) {
 	h.meanDailyUSD = mean(basket)
 	h.meanDaily = mean(portfolio)
 	h.stdevDaily = sampleStdev(portfolio)
+
+	// The override moves each symbol on its own. One shift for the whole
+	// basket would only fit a portfolio rebalanced every day: the plan
+	// buys and holds, so the gap between a strong and a weak asset would
+	// survive the shift, the strong one would come to dominate, and the
+	// plan would compound well above the target.
 	if cfg.ExpectedAnnualReturn != nil {
-		h.shift = (*cfg.ExpectedAnnualReturn - tradingDaysPerYear*h.meanDailyUSD) / tradingDaysPerYear
+		for i, r := range h.returns {
+			h.shifts[i] = *cfg.ExpectedAnnualReturn/tradingDaysPerYear - mean(r)
+		}
 	}
 	return h, nil
+}
+
+// shortHistoryError explains why the resampling history (dates, after the
+// lookback cut of common) holds fewer than need daily returns and names
+// what limits it: the lookback, or the series whose history starts last.
+func shortHistoryError(series []*market.Series, common, dates []time.Time, need int) error {
+	why := "one year of trading days"
+	if need > MinHistoryReturns {
+		why = "the block length"
+	}
+	have := max(len(dates)-1, 0)
+	if commonReturns := len(common) - 1; commonReturns >= need {
+		return fmt.Errorf("%w: the lookback keeps %d daily returns, need at least %d (%s); the full common history has %d",
+			ErrInsufficientHistory, have, need, why, commonReturns)
+	}
+
+	var youngest *market.Series
+	var start time.Time
+	for _, s := range series {
+		if first, ok := s.First(); ok && (youngest == nil || first.Date.After(start)) {
+			youngest, start = s, first.Date
+		}
+	}
+	span := ""
+	if len(dates) > 1 {
+		span = fmt.Sprintf(" (%s to %s)", dates[0].Format(market.DateLayout), dates[len(dates)-1].Format(market.DateLayout))
+	}
+	limit := ""
+	if youngest != nil {
+		limit = fmt.Sprintf("; %s's history starts latest, on %s", youngest.Meta.Symbol, start.Format(market.DateLayout))
+	}
+	return fmt.Errorf("%w: %d daily returns in common%s, need at least %d (%s)%s",
+		ErrInsufficientHistory, have, span, need, why, limit)
 }
 
 // commonDates returns, sorted ascending, the dates on which every series
@@ -484,8 +560,9 @@ func pricesOn(s *market.Series, dates []time.Time, price func(market.Bar) float6
 }
 
 // runPaths simulates every path on a worker pool and returns the final
-// value of each, indexed by path.
-func runPaths(plan planSpec, cfg MCConfig, h *history) []float64 {
+// value of each, indexed by path. Once ctx is done no new path starts;
+// runPaths waits for the running ones and returns ctx.Err().
+func runPaths(ctx context.Context, plan planSpec, cfg MCConfig, h *history) ([]float64, error) {
 	finals := make([]float64, cfg.Simulations)
 	jobs := make(chan int)
 	workers := min(runtime.NumCPU(), cfg.Simulations)
@@ -501,12 +578,25 @@ func runPaths(plan planSpec, cfg MCConfig, h *history) []float64 {
 			}
 		}()
 	}
-	for i := range cfg.Simulations {
-		jobs <- i
-	}
-	close(jobs)
+	feed(ctx, jobs, cfg.Simulations)
 	wg.Wait()
-	return finals
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return finals, nil
+}
+
+// feed sends the path indices 0 to n-1 to jobs, stops early once ctx is
+// done, and closes jobs so the workers' range loops end.
+func feed(ctx context.Context, jobs chan<- int, n int) {
+	defer close(jobs)
+	for i := range n {
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // pathRunner holds one worker's scratch state so that paths allocate
@@ -549,7 +639,7 @@ func (r *pathRunner) run(seed, index uint64) float64 {
 		day := (blockStart + blockPos) % days
 		blockPos++
 		for i := range r.prices {
-			r.prices[i] *= math.Exp(r.h.returns[i][day] + r.h.shift)
+			r.prices[i] *= math.Exp(r.h.returns[i][day] + r.h.shifts[i])
 		}
 		if r.h.fxReturns != nil {
 			fx *= math.Exp(r.h.fxReturns[day])
@@ -655,8 +745,8 @@ func assumptions(plan planSpec, cfg MCConfig, h *history) []string {
 		out = append(out, "KRW contributions are converted to USD at that day's simulated rate (KRW per USD) and the final USD value is converted back at the final simulated rate; the FX path is resampled jointly from the FX series' closes and is not shifted by the expected-return override.")
 	}
 	if cfg.ExpectedAnnualReturn != nil {
-		out = append(out, fmt.Sprintf("Expected annual return override: every resampled daily log return is shifted by %+.6f so the basket's compound annual growth in USD is %.2f%% (mean annual log return %.4f) instead of the historical %.2f%%.",
-			h.shift, (math.Exp(*cfg.ExpectedAnnualReturn)-1)*100, *cfg.ExpectedAnnualReturn,
+		out = append(out, fmt.Sprintf("Expected annual return override: each holding's resampled daily log returns are shifted by a constant of its own so that every holding's expected compound annual growth in USD is %.2f%% (mean annual log return %.4f) instead of its history; a mix of them then compounds at about that rate too (slightly above it when holdings that move differently diversify each other). The basket's historical growth was %.2f%% a year. Volatility, correlations and the order of returns are kept.",
+			(math.Exp(*cfg.ExpectedAnnualReturn)-1)*100, *cfg.ExpectedAnnualReturn,
 			(math.Exp(tradingDaysPerYear*h.meanDailyUSD)-1)*100))
 	}
 	return out

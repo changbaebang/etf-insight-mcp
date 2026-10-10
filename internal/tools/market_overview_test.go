@@ -37,7 +37,7 @@ func TestMarketOverview(t *testing.T) {
 		if spy.Label != "S&P 500" || spy.Trend != trend.State || spy.TrendAsOf != "2023-12-29" || spy.PctVsSMA200 == nil || *spy.PctVsSMA200 != round2(trend.PctVsSMA200) {
 			t.Errorf("SPY row = %+v, want trend %s %v", spy, trend.State, round2(trend.PctVsSMA200))
 		}
-		if spy.ChangePct != -0.5 || spy.Price != 100 || spy.AsOf != "2024-01-02T21:00:00Z" {
+		if spy.ChangePct != -0.5 || spy.Price != 100 || spy.QuoteTime != "2024-01-02T21:00:00Z" {
 			t.Errorf("SPY quote fields = %+v", spy)
 		}
 		for _, row := range out.Rows[:len(out.Rows)-1] {
@@ -50,8 +50,8 @@ func TestMarketOverview(t *testing.T) {
 		if tlt := out.Rows[6]; tlt.Symbol != "TLT" || tlt.AssetClass != "bond" || tlt.Trend != analytics.StateDowntrend {
 			t.Errorf("TLT row = %+v, want a bond in a downtrend", tlt)
 		}
-		if out.AsOf != "2024-01-02T21:15:00Z" || out.Disclaimer != Disclaimer || len(out.Notes) == 0 {
-			t.Errorf("as_of/disclaimer/notes = %s/%q/%v", out.AsOf, out.Disclaimer, out.Notes)
+		if out.LatestQuoteTime != "2024-01-02T21:15:00Z" || out.Disclaimer != Disclaimer || len(out.Notes) == 0 {
+			t.Errorf("latest_quote_time/disclaimer/notes = %s/%q/%v", out.LatestQuoteTime, out.Disclaimer, out.Notes)
 		}
 	})
 
@@ -105,4 +105,22 @@ func TestMarketOverview(t *testing.T) {
 		sess := newSession(t, dataDeps(newDataFakeSource(), fund))
 		callErr(t, sess, "market_overview", map[string]any{}, "no quote for any overview symbol")
 	})
+}
+
+func TestMarketOverviewStaleQuotes(t *testing.T) {
+	clock := &testClock{t: now}
+	sess, fund := newQuoteCacheSession(t, clock)
+	callRaw(t, sess, "market_overview", map[string]any{})
+
+	fund.failQuotes(errDataFakeNetwork)
+	clock.advance(6 * time.Hour)
+	out := callRaw(t, sess, "market_overview", map[string]any{})
+	warnings := rawStrings(out["warnings"])
+	if !hasDataNote(warnings, "6 hours old") || !hasDataNote(warnings, "SPY") || !hasDataNote(warnings, "connection reset by peer") {
+		t.Errorf("warnings = %v, want the stale quotes named with their age and the cause", warnings)
+	}
+	rows, _ := out["rows"].([]any)
+	if len(rows) != len(overviewInstruments) || rows[0].(map[string]any)["stale"] != true {
+		t.Errorf("rows = %v, want every row served from memory and marked stale", rows)
+	}
 }

@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/changbaebang/etf-insight-mcp/internal/market"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -146,6 +148,39 @@ func analysisRound2OrNil(v float64) *float64 {
 		return nil
 	}
 	return ptr(round2(v))
+}
+
+// analysisRequireUSD rejects a series used as a fund when it is quoted in
+// a currency other than USD (see requireUSD). KRW=X, the exchange rate
+// the plans convert through, is exempt as in every other tool; the
+// answer then carries instrumentNote's caution instead.
+func analysisRequireUSD(s *market.Series) error {
+	if s.Meta.Symbol == fxSymbol {
+		return nil
+	}
+	return requireUSD(s)
+}
+
+// analysisMinAnnualizedDays is the shortest span, in calendar days, that
+// the analysis tools annualize. It matches analytics.Summarize, which
+// annualizes a return window only from 365 days on, so a figure called
+// annualized means the same in every analysis tool and in get_etf_info.
+const analysisMinAnnualizedDays = 365
+
+// analysisAnnualized returns the compound annual growth of prices from
+// their first to their last entry, dated from and to, and ok false when
+// the span is shorter than analysisMinAnnualizedDays (a shorter return is
+// not extrapolated to a year) or the growth is not computable.
+func analysisAnnualized(prices []float64, from, to time.Time) (cagr float64, ok bool) {
+	days := to.Sub(from).Hours() / 24
+	if len(prices) < 2 || days < analysisMinAnnualizedDays {
+		return 0, false
+	}
+	cagr = math.Pow(prices[len(prices)-1]/prices[0], 365.25/days) - 1
+	if math.IsNaN(cagr) || math.IsInf(cagr, 0) {
+		return 0, false
+	}
+	return cagr, true
 }
 
 // analysisFinite maps NaN and ±Inf to 0 so a value can be marshalled.

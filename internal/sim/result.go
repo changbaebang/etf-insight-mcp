@@ -6,10 +6,12 @@ import "time"
 type Holding struct {
 	// Symbol is the upper-case ticker.
 	Symbol string
-	// Shares is the fractional number of shares held at the end. Shares are
-	// bought at Bar.Close, so this is a real, split-adjusted share count
-	// that can be multiplied by a quoted price; with Plan.Reinvest it
-	// includes the shares bought with dividends.
+	// Shares is the fractional number of shares held at the end of the
+	// range, as quoted on that day: shares are bought at the split-adjusted
+	// Bar.Close and then divided by the ratio of every split dated after
+	// the range (Result.Notes names them), so Shares × the price quoted on
+	// Result.End is Value. With Plan.Reinvest it includes the shares bought
+	// with dividends.
 	Shares float64
 	// Invested is the gross amount contributed to this symbol (its weight
 	// of every contribution, fees included), in the plan currency, so the
@@ -57,8 +59,8 @@ type Result struct {
 	Contributions int
 	// Invested is the sum of all contributions before fees.
 	Invested float64
-	// Fees is the sum of Plan.Amount × Plan.FeeRate + Plan.FeeFixed over
-	// all contributions.
+	// Fees is the sum of Plan.Amount × Plan.FeeRate + Plan.FeeFixed × (the
+	// number of allocations) over all contributions.
 	Fees float64
 	// FinalValue is the value of all holdings at End's close plus, when
 	// !Plan.Reinvest, the uninvested cash dividends.

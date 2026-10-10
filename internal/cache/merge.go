@@ -21,15 +21,20 @@ const closeTolerance = 1e-6
 var errNeedFull = errors.New("cache: full fetch needed")
 
 // mergeTail extends the cached history base with tail, a range fetch that
-// starts a few days before base's last bar and ends today, and returns the
-// merged series without mutating either input. It returns an error
+// starts at from, a few days before base's last bar, and ends today. It
+// returns the merged series without mutating either input, or an error
 // wrapping errNeedFull whenever appending would leave the cached bars and
 // the provider's current view inconsistent. The rules, in order:
 //
 //  1. The overlap is every tail bar dated on or before base's last bar.
-//     Those dates and the cached dates in the same span must match one to
-//     one; a bar on either side without a counterpart means the provider's
-//     trading calendar for those days changed. Full fetch.
+//     Its dates must match, one to one, the cached bars from from (or the
+//     overlap's first date, if earlier) through the last cached bar; a
+//     bar on either side without a counterpart means the provider's
+//     trading calendar changed or its history was rewritten. Full fetch.
+//     One exception: when nothing newer follows, the tail may lack the
+//     newest cached day, because the provider withholds a session's bar
+//     for a while after the close. That cached bar, captured during the
+//     session, is dropped; the next top-up brings the settled one.
 //  2. A dividend that differs between an overlapping tail bar and its
 //     cached bar, or a dividend on a new bar, changes AdjClose for every
 //     earlier bar (the adjustment is applied backwards). Full fetch.
@@ -38,7 +43,9 @@ var errNeedFull = errors.New("cache: full fetch needed")
 //     or a back-adjustment was applied to the whole history, so the
 //     cached bars before the overlap are stale too. Full fetch. The newest
 //     cached bar is exempt because it may have been captured during the
-//     trading session; the tail's print of that day replaces it.
+//     trading session; the tail's print of that day replaces it. At least
+//     one bar must be compared this way, or a rescaled history would go
+//     unnoticed. Full fetch otherwise.
 //  4. A split in the tail that the cache does not already hold (same date
 //     and ratio) rescaled every earlier price. Full fetch.
 //  5. Otherwise the bars dated after the last cached bar are appended, the
@@ -46,8 +53,9 @@ var errNeedFull = errors.New("cache: full fetch needed")
 //     the tail's latest quote fields, and the result must pass
 //     market.Series.Validate.
 //
-// An empty tail returns a copy of base: nothing new was published.
-func mergeTail(base, tail *market.Series) (*market.Series, error) {
+// An empty tail returns a copy of base: the provider published nothing,
+// so there is nothing to append and nothing to contradict the cache.
+func mergeTail(base, tail *market.Series, from time.Time) (*market.Series, error) {
 	if err := tail.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: tail: %w", errNeedFull, err)
 	}
@@ -58,8 +66,12 @@ func mergeTail(base, tail *market.Series) (*market.Series, error) {
 	n := sort.Search(len(tail.Bars), func(i int) bool { return tail.Bars[i].Date.After(last.Date) })
 	overlap, fresh := tail.Bars[:n], tail.Bars[n:]
 
-	if err := checkOverlap(base, overlap); err != nil {
-		return nil, err
+	keep := base.Bars // the cached bars that stay; checkOverlap may drop the newest
+	if tail.Len() > 0 {
+		var err error
+		if keep, err = checkOverlap(base, overlap, from, len(fresh) > 0); err != nil {
+			return nil, err
+		}
 	}
 	if err := checkNewDividends(fresh); err != nil {
 		return nil, err
@@ -70,14 +82,14 @@ func mergeTail(base, tail *market.Series) (*market.Series, error) {
 
 	merged := &market.Series{
 		Meta:   refreshMeta(base.Meta, tail.Meta),
-		Bars:   make([]market.Bar, 0, len(base.Bars)+len(fresh)),
+		Bars:   make([]market.Bar, 0, len(keep)+len(fresh)),
 		Splits: base.Splits,
 	}
-	merged.Bars = append(merged.Bars, base.Bars...)
-	if len(overlap) > 0 {
+	merged.Bars = append(merged.Bars, keep...)
+	if len(overlap) > 0 && len(keep) == len(base.Bars) {
 		// checkOverlap proved the overlap ends on the newest cached bar's
 		// date; the tail's print of that day is the settled one.
-		merged.Bars[len(base.Bars)-1] = overlap[len(overlap)-1]
+		merged.Bars[len(keep)-1] = overlap[len(overlap)-1]
 	}
 	merged.Bars = append(merged.Bars, fresh...)
 	if err := merged.Validate(); err != nil {
@@ -86,30 +98,50 @@ func mergeTail(base, tail *market.Series) (*market.Series, error) {
 	return merged, nil
 }
 
-// checkOverlap applies rules 1 to 3 to the tail bars dated on or before
-// the newest cached bar.
-func checkOverlap(base *market.Series, overlap []market.Bar) error {
-	if len(overlap) == 0 {
-		return nil
+// checkOverlap applies rules 1 to 3 to overlap, the tail bars dated on or
+// before the newest cached bar, and returns the cached bars to keep:
+// all of base's, or all but the newest when the provider withheld that
+// day (allowed only when hasFresh is false). It returns base.Bars itself,
+// or a prefix of it, never a copy.
+func checkOverlap(base *market.Series, overlap []market.Bar, from time.Time, hasFresh bool) ([]market.Bar, error) {
+	start := market.Day(from)
+	if len(overlap) > 0 && overlap[0].Date.Before(start) {
+		start = overlap[0].Date
 	}
-	cached := base.Between(overlap[0].Date, time.Time{})
+	cached := base.Between(start, time.Time{})
+	keep := base.Bars
+	withheld := !hasFresh && len(overlap) == len(cached)-1
+	if withheld {
+		cached = cached[:len(overlap)]
+		keep = keep[:len(keep)-1]
+	}
 	if len(cached) != len(overlap) {
-		return fmt.Errorf("%w: %d cached bars since %s but %d in the tail",
-			errNeedFull, len(cached), day(overlap[0].Date), len(overlap))
+		return nil, fmt.Errorf("%w: %d cached bars since %s but %d in the tail",
+			errNeedFull, len(cached), day(start), len(overlap))
 	}
-	newest := len(overlap) - 1
+	// exempt is the index of the bar spared the price check, the tail's
+	// print of the newest cached day, and so also the number of bars that
+	// are checked. A withheld day has no print: every overlap bar is
+	// checked.
+	exempt := len(overlap) - 1
+	if withheld {
+		exempt = len(overlap)
+	}
+	if exempt < 1 {
+		return nil, fmt.Errorf("%w: no cached bar since %s to check the tail against", errNeedFull, day(start))
+	}
 	for i, got := range overlap {
 		have := cached[i]
 		switch {
 		case !have.Date.Equal(got.Date):
-			return fmt.Errorf("%w: cached bar on %s, tail bar on %s", errNeedFull, day(have.Date), day(got.Date))
+			return nil, fmt.Errorf("%w: cached bar on %s, tail bar on %s", errNeedFull, day(have.Date), day(got.Date))
 		case !nearlyEqual(have.Dividend, got.Dividend):
-			return fmt.Errorf("%w: dividend on %s changed from %g to %g", errNeedFull, day(got.Date), have.Dividend, got.Dividend)
-		case i != newest && !samePrices(have, got):
-			return fmt.Errorf("%w: prices on %s changed", errNeedFull, day(got.Date))
+			return nil, fmt.Errorf("%w: dividend on %s changed from %g to %g", errNeedFull, day(got.Date), have.Dividend, got.Dividend)
+		case i != exempt && !samePrices(have, got):
+			return nil, fmt.Errorf("%w: prices on %s changed", errNeedFull, day(got.Date))
 		}
 	}
-	return nil
+	return keep, nil
 }
 
 // checkNewDividends applies rule 2 to the bars that would be appended.

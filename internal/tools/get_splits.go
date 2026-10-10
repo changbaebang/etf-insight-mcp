@@ -37,7 +37,7 @@ func (d Deps) registerGetSplits(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_splits",
 		Title:       "Get splits",
-		Description: "Share splits and reverse splits of one symbol over its whole cached price history, oldest first, as ratio new:old (2:1 doubles the share count, 1:10 is a reverse split). Use it to explain a sudden jump in raw share prices or share counts; prices in every other tool are already split-adjusted, so no correction is needed. At most the 100 most recent splits are listed.",
+		Description: "Share splits and reverse splits of one symbol over its whole cached price history, oldest first, as ratio new:old (2:1 doubles the share count, 1:10 is a reverse split). Use it to explain a sudden jump in raw share prices or share counts; prices and dividend amounts in every other tool are already restated for splits to today's share count, so no correction is needed (get_dividends also shows the cash actually paid before a split). At most the 100 most recent splits are listed.",
 		Annotations: readOnly("Get splits", true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in getSplitsInput) (*mcp.CallToolResult, getSplitsOutput, error) {
 		out, err := d.getSplits(ctx, in)
@@ -59,7 +59,7 @@ func (d Deps) getSplits(ctx context.Context, in getSplitsInput) (getSplitsOutput
 		HistoryTo:   formatDate(last.Date),
 		Count:       len(s.Splits),
 		Splits:      []splitRow{},
-		Notes:       []string{"prices in every tool are already split-adjusted"},
+		Notes:       []string{"prices and dividend amounts in every tool are already split-adjusted: values dated before a split are restated to today's share count"},
 		Warnings:    d.staleWarnings(s.Meta.Symbol),
 	}
 	splits := s.Splits

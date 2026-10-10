@@ -143,6 +143,9 @@ func TestParseFlags(t *testing.T) {
 		want string
 	}{
 		{args: []string{"-full-refresh-days", "0"}, want: "-full-refresh-days must be at least 1"},
+		// Larger values would overflow time.Duration in fullRefreshInterval.
+		{args: []string{"-full-refresh-days", "106752"}, want: "-full-refresh-days must be at most 36500"},
+		{args: []string{"-full-refresh-days", "36501"}, want: "-full-refresh-days must be at most 36500"},
 		{args: []string{"-cache-ttl", "0s"}, want: "-cache-ttl must be positive"},
 		{args: []string{"serve"}, want: `unexpected argument "serve"`},
 	}
@@ -222,5 +225,51 @@ func TestRealMainClearCache(t *testing.T) {
 	}
 	if _, err := os.Stat(stray); err != nil {
 		t.Errorf("a file the server did not write was removed: %v", err)
+	}
+}
+
+// TestRealMainClearCachePartial makes the fund directory read-only, so the
+// price file goes but the fund document stays. The report must count only
+// what was removed and name what is still there.
+func TestRealMainClearCachePartial(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	store := cache.New(fakeSource{}, dir, time.Hour)
+	if _, err := store.Series(context.Background(), "SPY"); err != nil {
+		t.Fatal(err)
+	}
+	priceInfo, err := os.Stat(filepath.Join(dir, "SPY.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fundDir := filepath.Join(dir, "fund")
+	if err := os.MkdirAll(fundDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fundDir, "SPY.profile.json"), []byte(`{"version":1,"fetched_at":"2024-01-05T00:00:00Z","data":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fundDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(fundDir, 0o755) })
+
+	var stdout, stderr strings.Builder
+	if code := realMain([]string{"-clear-cache", "-cache-dir", dir}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1; stderr %q", code, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+	want := []string{
+		fmt.Sprintf("etf-insight-mcp: removed 1 file (%d bytes) from %s", priceInfo.Size(), dir),
+		"  price history: SPY",
+		"  still there: fund documents: 1 file",
+	}
+	if len(lines) != len(want)+1 || !slices.Equal(lines[:len(want)], want) {
+		t.Fatalf("stderr lines = %q, want %q then the error", lines, want)
+	}
+	if !strings.Contains(lines[len(want)], "failed partway") {
+		t.Errorf("last line = %q, want the partial-failure error", lines[len(want)])
 	}
 }

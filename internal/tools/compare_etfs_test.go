@@ -62,7 +62,8 @@ func TestCompareETFs(t *testing.T) {
 			t.Errorf("VOO corr to SPY = %v, want %v", got, want)
 		}
 		sum := toSummaryOutput(cmp.Summaries[2])
-		if voo.Volatility1YPct != sum.Volatility1YPct || voo.MaxDrawdownAllPct != sum.MaxDrawdownAllPct || voo.TTMDividendYieldPct != sum.TTMDividendYieldPct || !reflect.DeepEqual(voo.Returns, sum.Windows) {
+		wantWindows := slices.DeleteFunc(sum.Windows, func(w windowOutput) bool { return w.Label == "max" })
+		if voo.Volatility1YPct != sum.Volatility1YPct || voo.TTMDividendYieldPct != sum.TTMDividendYieldPct || !reflect.DeepEqual(voo.Returns, wantWindows) {
 			t.Errorf("VOO summary fields do not match analytics: %+v", voo)
 		}
 		if voo.Name != "Vanguard S&P 500 ETF" || voo.Category != "US Large Cap" || voo.TrendState == "" {

@@ -67,8 +67,9 @@ type Client struct {
 	summaryTTL time.Duration
 	now        func() time.Time
 
-	session *session
-	memo    *summaryMemo
+	session   *session
+	memo      *summaryMemo
+	summaries callGroup[*fundSummary] // quoteSummary requests in flight, by symbol
 }
 
 // Option configures a Client created by New.
@@ -169,11 +170,18 @@ func (c *Client) Series(ctx context.Context, symbol string) (*market.Series, err
 	return c.SeriesRange(ctx, symbol, time.Time{}, time.Time{})
 }
 
-// SeriesRange fetches the daily bars of symbol whose exchange-local date
-// lies between the calendar dates from and to inclusive, together with
-// the dividends and splits in that window. It implements
-// market.RangeSource. A zero from means the beginning of history and a
-// zero to means today. from after to is an error.
+// SeriesRange fetches the daily bars of symbol dated from the calendar
+// date from through to, together with the dividends and splits in that
+// window. It implements market.RangeSource. A zero from means the
+// beginning of history and a zero to means today. from after to is an
+// error.
+//
+// Yahoo applies the bounds to the UTC time stamping each bar, the
+// session open (see chartPeriod). That matches the exchange-local date
+// wherever the session opens at or after UTC midnight, as in the US,
+// Europe and Korea. Where it opens before (the ASX and NZX), a bar is
+// stamped on the UTC date before its own, so the result can also hold the
+// trading day after to.
 //
 // The symbol is trimmed and upper-cased before the request. Unknown
 // symbols return an error wrapping market.ErrNotFound. Every error
@@ -207,7 +215,8 @@ const historyStart int64 = -2208988800
 // period1/period2 Unix pair the chart endpoint expects. A zero from means
 // all history and a zero to means now. to is widened to the last second
 // of its UTC day so the bar of that day, which Yahoo stamps at the
-// exchange open, is included.
+// exchange open, is included; see SeriesRange for exchanges that open
+// before UTC midnight.
 func (c *Client) chartPeriod(from, to time.Time) (period1, period2 int64, err error) {
 	period1 = historyStart
 	if !from.IsZero() {

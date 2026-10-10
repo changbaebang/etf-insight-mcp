@@ -18,10 +18,17 @@ import (
 // uses: the cookie bootstrap at "/", getcrumb, chart, quoteSummary, v7
 // quote and search. It hands out numbered cookies ("sess-N") and crumbs
 // ("crumb-N"), validates them on the authenticated endpoints and records
-// every request. All fields are guarded by mu; set the knobs before the
-// first request.
+// every request. All fields are guarded by mu, except the two summary
+// channels, which are only read; set the knobs before the first request.
 type fakeYahoo struct {
 	mu sync.Mutex
+
+	// summaryGate, when set, holds every quoteSummary request until it is
+	// closed, and summaryArrived (buffered) receives a token as each such
+	// request arrives. Both are used before mu is taken, so a held request
+	// does not block the other endpoints.
+	summaryGate    chan struct{}
+	summaryArrived chan struct{}
 
 	cookies int    // bootstraps served
 	crumbs  int    // crumbs served
@@ -58,6 +65,13 @@ type fakeRequest struct {
 const invalidCrumbBody = `{"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}`
 
 func (f *fakeYahoo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if f.summaryGate != nil && strings.HasPrefix(r.URL.Path, summaryPath) {
+		select {
+		case f.summaryArrived <- struct{}{}:
+		default:
+		}
+		<-f.summaryGate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reqs = append(f.reqs, fakeRequest{

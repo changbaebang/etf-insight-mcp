@@ -1,12 +1,14 @@
 package cache
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -76,14 +78,16 @@ type Status struct {
 }
 
 // Status reads the cache directory and reports what is in it. Price files
-// are read only up to their header, so the cost is per file, not per bar.
-// A missing directory is an empty cache, not an error. Symlinks and files
-// this package did not write are ignored.
+// are read only up to their header (and their last few bytes), so the
+// cost is per file, not per bar. A missing directory is an empty cache,
+// not an error. Files whose names this package never writes are ignored,
+// and symlinks are never followed, a symlinked fund directory included.
 func (s *Store) Status(ctx context.Context) (*Status, error) {
 	st := &Status{Dir: s.dir}
 	if err := s.scanPriceFiles(ctx, st); err != nil {
 		return nil, err
 	}
+	slices.SortFunc(st.Symbols, func(a, b SymbolStatus) int { return cmp.Compare(a.Symbol, b.Symbol) })
 	if err := s.scanFundFiles(ctx, st); err != nil {
 		return nil, err
 	}
@@ -113,9 +117,19 @@ func (s *Store) scanPriceFiles(ctx context.Context, st *Status) error {
 	})
 }
 
-// scanFundFiles adds every fund file under <dir>/fund to st.
+// scanFundFiles adds every fund file under <dir>/fund to st. A fund
+// directory that is not a real directory is reported, not followed.
 func (s *Store) scanFundFiles(ctx context.Context, st *Status) error {
-	dir := filepath.Join(s.dir, fundSubdir)
+	dir, err := s.fundDir()
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case errors.Is(err, errNotRealDir):
+		st.Warnings = append(st.Warnings, fmt.Sprintf("%s: %v; its files are neither counted nor cleared", fundSubdir, err))
+		return nil
+	case err != nil:
+		return err
+	}
 	return scanDir(ctx, dir, func(d fs.DirEntry, info fs.FileInfo) {
 		if _, _, ok := fundFileParts(d.Name()); !ok {
 			return
@@ -182,11 +196,11 @@ func (s *Store) countFile(st *Status, name string, size int64, fetchedAt time.Ti
 
 // addErrorWarnings reports every symbol whose last fetch or write failed.
 func (s *Store) addErrorWarnings(st *Status) {
-	for _, sym := range s.lastErr.keys() {
-		st.Warnings = append(st.Warnings, fmt.Sprintf("%s: last fetch failed: %v", sym, s.lastErr.get(sym)))
+	for _, e := range s.lastErr.snapshot() {
+		st.Warnings = append(st.Warnings, fmt.Sprintf("%s: last fetch failed: %v", e.key, e.err))
 	}
-	for _, sym := range s.lastWriteErr.keys() {
-		st.Warnings = append(st.Warnings, fmt.Sprintf("%s: last write failed: %v", sym, s.lastWriteErr.get(sym)))
+	for _, e := range s.lastWriteErr.snapshot() {
+		st.Warnings = append(st.Warnings, fmt.Sprintf("%s: last write failed: %v", e.key, e.err))
 	}
 }
 
@@ -205,11 +219,14 @@ func (s *Store) addTotalWarnings(st *Status) {
 // returns the symbols for which at least one file was removed; a symbol
 // without files is simply absent from the result. A symbol that is not
 // safe as a file name makes Clear return an error wrapping
-// ErrInvalidSymbol before anything is removed. Only regular files directly
-// inside the cache directory are touched; symlinks are left alone, never
-// followed. The remembered LastError and LastWriteError of each symbol are
+// ErrInvalidSymbol before anything is removed. Files are chosen by name:
+// <SYMBOL>.json in the cache directory and <SYMBOL>.<kind>.json in its
+// fund directory. Only regular files are touched; symlinks are left
+// alone, never followed, and a fund directory that is itself a symlink is
+// skipped. The remembered LastError and LastWriteError of each symbol are
 // forgotten. A fetch already in flight for a cleared symbol still writes
-// its result afterwards, and a FundStore's in-memory quotes are unaffected.
+// its result afterwards, and a FundStore's in-memory quotes are
+// unaffected.
 func (s *Store) Clear(symbols []string) ([]string, error) {
 	syms, err := normalizeSymbols(symbols)
 	if err != nil {
@@ -229,35 +246,75 @@ func (s *Store) Clear(symbols []string) ([]string, error) {
 		}
 		s.lastErr.forget(sym)
 		s.lastWriteErr.forget(sym)
+		s.forgetUnwritten(sym)
 	}
 	return removed, errors.Join(errs...)
 }
 
 // ClearAll removes every file this package wrote under the cache
-// directory: price files, fund files and leftover temporary files. Other
-// files, subdirectories and symlinks are left alone. It returns the number
-// of files removed and forgets every remembered error.
+// directory: price and fund files, recognized by their name and by the
+// header every cache file starts with, and temporary files of interrupted
+// writes older than ten minutes (younger ones may belong to a write in
+// progress; the next start sweeps them). Other files, subdirectories and
+// symlinks are left alone, and a fund directory that is itself a symlink
+// is skipped. It returns the number of files removed and forgets every
+// remembered error.
 func (s *Store) ClearAll() (int, error) {
-	price, priceErr := ownFiles(s.dir, isPriceFile)
-	fund, fundErr := ownFiles(filepath.Join(s.dir, fundSubdir), isFundFile)
-	removed, removeErr := removeFiles(append(price, fund...))
+	paths, err := s.ownFiles(s.dir, isPriceFile)
+	errs := []error{err}
+	dir, err := s.fundDir()
+	switch {
+	case err == nil:
+		fund, err := s.ownFiles(dir, isFundFile)
+		paths = append(paths, fund...)
+		errs = append(errs, err)
+	case !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, errNotRealDir):
+		errs = append(errs, err)
+	}
+	removed, err := removeFiles(paths)
+	errs = append(errs, err)
 	s.lastErr.reset()
 	s.lastWriteErr.reset()
-	return removed, errors.Join(priceErr, fundErr, removeErr)
+	s.forgetUnwritten()
+	return removed, errors.Join(errs...)
 }
 
-// symbolFiles lists every file Clear removes for sym.
+// errNotRealDir reports a fund directory that is a symlink or a file.
+var errNotRealDir = errors.New("not a real directory (symlinks are not followed)")
+
+// fundDir returns the fund subdirectory of the cache. The error wraps
+// fs.ErrNotExist when it is missing and is errNotRealDir when it is
+// anything but a real directory, a symlink to one included.
+func (s *Store) fundDir() (string, error) {
+	dir := filepath.Join(s.dir, fundSubdir)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return dir, fmt.Errorf("cache: stat %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return dir, errNotRealDir
+	}
+	return dir, nil
+}
+
+// symbolFiles lists every file Clear removes for sym. The fund documents
+// are left out when the fund directory is not a real directory.
 func (s *Store) symbolFiles(sym string) []string {
 	paths := []string{s.path(sym)}
+	if _, err := s.fundDir(); err != nil {
+		return paths
+	}
 	for _, kind := range fundKinds {
 		paths = append(paths, fundPath(s.dir, sym, kind))
 	}
 	return paths
 }
 
-// ownFiles returns the regular files in dir that owned recognizes, plus
-// leftover *.tmp files. A missing dir yields nothing.
-func ownFiles(dir string, owned func(name string) bool) ([]string, error) {
+// ownFiles returns the files in dir that this package wrote: regular
+// files whose name isData accepts and whose content starts with a cache
+// header, plus leftover temporary files (see isLeftoverTemp). A missing
+// dir yields nothing.
+func (s *Store) ownFiles(dir string, isData func(name string) bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -265,11 +322,13 @@ func ownFiles(dir string, owned func(name string) bool) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cache: read %s: %w", dir, err)
 	}
+	now := s.now()
 	var paths []string
 	for _, d := range entries {
-		name := d.Name()
-		if d.Type().IsRegular() && (owned(name) || strings.HasSuffix(name, ".tmp")) {
-			paths = append(paths, filepath.Join(dir, name))
+		path := filepath.Join(dir, d.Name())
+		data := d.Type().IsRegular() && isData(d.Name()) && hasCacheHeader(path)
+		if data || isLeftoverTemp(d, now) {
+			paths = append(paths, path)
 		}
 	}
 	return paths, nil
@@ -296,7 +355,7 @@ func removeFiles(paths []string) (int, error) {
 			continue
 		}
 		if err := os.Remove(p); err != nil {
-			errs = append(errs, fmt.Errorf("cache: remove %s: %w", p, err))
+			errs = append(errs, fmt.Errorf("cache: %w", err)) // *fs.PathError already names the operation and path
 			continue
 		}
 		removed++

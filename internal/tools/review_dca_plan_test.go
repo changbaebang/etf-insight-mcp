@@ -78,13 +78,15 @@ func TestReviewDCAPlan(t *testing.T) {
 		if c.ExpenseRatioPct == nil || *c.ExpenseRatioPct != 0.03 {
 			t.Fatalf("expense_ratio_pct = %v, want 0.03", c.ExpenseRatioPct)
 		}
-		if c.ExpenseCostPerYearOnProjectedHoldings == nil || *c.ExpenseCostPerYearOnProjectedHoldings != round2(0.0003*1260*1/2) {
-			t.Errorf("expense cost = %v, want %v", c.ExpenseCostPerYearOnProjectedHoldings, round2(0.0003*1260*1/2))
+		// Commissions never buy shares, so the expense ratio applies to the
+		// 1260 − 249.48 = 1010.52 USD a year that reaches the fund.
+		if c.ExpenseCostPerYearOnProjectedHoldings == nil || *c.ExpenseCostPerYearOnProjectedHoldings != round2(0.0003*1010.52*1/2) {
+			t.Errorf("expense cost = %v, want %v", c.ExpenseCostPerYearOnProjectedHoldings, round2(0.0003*1010.52*1/2))
 		}
-		if want := pct((249.48 + 0.0003*1260/2) / 1260); c.TotalCostPctOfOutlayYear1 != want {
+		if want := pct((249.48 + 0.0003*1010.52/2) / 1260); c.TotalCostPctOfOutlayYear1 != want {
 			t.Errorf("total_cost_pct_of_outlay_year1 = %v, want %v", c.TotalCostPctOfOutlayYear1, want)
 		}
-		if !hasNote(c.Notes, "expense_ratio × annual_outlay × horizon_years / 2") {
+		if !hasNote(c.Notes, "expense_ratio × (annual_outlay − commission_per_year) × horizon_years / 2") {
 			t.Errorf("costs notes = %v, want the formula", c.Notes)
 		}
 	})
@@ -110,7 +112,7 @@ func TestReviewDCAPlan(t *testing.T) {
 				}
 			}
 		}
-		if !hasNote(obs, "historical 3-month windows the plan ended below cost") {
+		if !hasNote(obs, "historical 3-month windows (one starting every month; they overlap") || !hasNote(obs, "before commissions") {
 			t.Errorf("observations lack the short-term sentence: %v", obs)
 		}
 	})
@@ -124,9 +126,9 @@ func TestReviewDCAPlan(t *testing.T) {
 			t.Fatalf("ttm_dividend_yield_pct = %v, want > 0", h.TTMDividendYieldPct)
 		}
 		// The yield is shown rounded to 0.01 percentage points, which moves
-		// yield × 1260 by up to 0.063.
-		if diff := h.ProjectedAnnualDividendsAtHorizon - h.TTMDividendYieldPct/100*1260*1; diff > 0.07 || diff < -0.07 {
-			t.Errorf("projected dividends %v, want about yield %v%% × 1260 × 1", h.ProjectedAnnualDividendsAtHorizon, h.TTMDividendYieldPct)
+		// yield × 1010.52 (the outlay net of commissions) by up to 0.051.
+		if diff := h.ProjectedAnnualDividendsAtHorizon - h.TTMDividendYieldPct/100*1010.52*1; diff > 0.06 || diff < -0.06 {
+			t.Errorf("projected dividends %v, want about yield %v%% × 1010.52 × 1", h.ProjectedAnnualDividendsAtHorizon, h.TTMDividendYieldPct)
 		}
 	})
 
@@ -144,8 +146,11 @@ func TestReviewDCAPlan(t *testing.T) {
 				t.Errorf("short rolling percentiles lack %s", key)
 			}
 		}
-		if !strings.HasPrefix(r.Summary, "over ") || !strings.Contains(r.Summary, "historical 3-month windows the plan ended below cost") {
+		if !strings.HasPrefix(r.Summary, "over ") || !strings.Contains(r.Summary, "historical 3-month windows (one starting every month; they overlap, so only") || !strings.Contains(r.Summary, "the plan ended below cost") {
 			t.Errorf("summary = %q", r.Summary)
+		}
+		if r.BeforeCommissions == nil || r.BeforeCommissions.ProbLossPct > r.ProbLossPct {
+			t.Errorf("before_commissions = %+v, want a loss frequency no higher than the %v%% with commissions", r.BeforeCommissions, r.ProbLossPct)
 		}
 	})
 
@@ -179,7 +184,9 @@ func TestReviewDCAPlan(t *testing.T) {
 		if cd.LowExpenseRatioPct != 0.03 || cd.HighExpenseRatioPct != 0.2 || cd.FinalValueLow <= cd.FinalValueHigh || cd.Difference != round2(cd.FinalValueLow-cd.FinalValueHigh) {
 			t.Errorf("cost_drag = %+v", cd)
 		}
-		if cd.NetInvested != round2(1260-249.48) || cd.AssumedGrowthPct != mc.HistoricalAnnualReturnPct {
+		// The historical return is net of VOO's own 0.03%, which is added
+		// back before the two hypothetical ratios are applied.
+		if cd.NetInvested != round2(1260-249.48) || cd.AssumedGrowthPct != pct((1+mc.HistoricalAnnualReturnPct/100)/(1-0.0003)-1) {
 			t.Errorf("cost_drag net/growth = %v/%v", cd.NetInvested, cd.AssumedGrowthPct)
 		}
 		if !strings.Contains(l.CostDragNote, "0.03% expense ratio ends at about") || !strings.Contains(l.CostDragNote, "(1 − expense ratio))^(1/12)") {

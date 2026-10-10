@@ -53,8 +53,9 @@ func TestForecastDCA(t *testing.T) {
 		if len(out.Assumptions) < 5 || len(out.Trend) != 1 || out.Trend[0].Symbol != "VOO" || out.Trend[0].SMA200 <= 0 {
 			t.Errorf("assumptions/trend = %d/%+v", len(out.Assumptions), out.Trend)
 		}
-		if out.Disclaimer != Disclaimer || len(out.Warnings) != 0 {
-			t.Errorf("disclaimer ok %v, warnings %v", out.Disclaimer == Disclaimer, out.Warnings)
+		// Three years of VOO history for a five-year horizon.
+		if out.Disclaimer != Disclaimer || len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "resamples only") {
+			t.Errorf("disclaimer ok %v, warnings %v, want only the short-history warning", out.Disclaimer == Disclaimer, out.Warnings)
 		}
 	})
 

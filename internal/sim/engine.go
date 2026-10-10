@@ -1,7 +1,11 @@
 package sim
 
 import (
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/changbaebang/etf-insight-mcp/internal/market"
 )
 
 // engine holds the running state of one simulation. All money fields are
@@ -12,7 +16,7 @@ type engine struct {
 	fx      *converter
 	contrib []bool // contrib[k] is true when days[k] is a contribution day
 
-	shares     []float64 // per allocation, real (split-adjusted) shares
+	shares     []float64 // per allocation, in today's split-adjusted units
 	investedBy []float64 // gross contributions per allocation
 
 	contributions int
@@ -26,6 +30,7 @@ type engine struct {
 	value         float64 // total value at the close of the current day
 
 	firstRate, lastRate float64
+	staleRates          []staleRun // FX fallbacks more than a week old
 	flows               []CashFlow
 	navs                []float64
 	timeline            []Point
@@ -54,10 +59,11 @@ func newEngine(p Plan, cal *calendar, fx *converter) *engine {
 // every dividend would register as a drawdown.
 func (e *engine) run() (*Result, error) {
 	for k, day := range e.cal.days {
-		rate, err := e.fx.rate(day)
+		rate, asOf, err := e.fx.rate(day)
 		if err != nil {
 			return nil, err
 		}
+		e.trackStaleRate(day, asOf, rate)
 		if k == 0 {
 			e.firstRate = rate
 		}
@@ -81,12 +87,30 @@ func (e *engine) run() (*Result, error) {
 	return e.result(), nil
 }
 
+// trackStaleRate records day in staleRates when its rate comes from an FX
+// bar dated asOf more than staleRateAfter before it. Consecutive days on
+// the same bar extend one run.
+func (e *engine) trackStaleRate(day, asOf time.Time, rate float64) {
+	if day.Sub(asOf) <= staleRateAfter {
+		return
+	}
+	if n := len(e.staleRates); n > 0 && e.staleRates[n-1].asOf.Equal(asOf) {
+		e.staleRates[n-1].last = day
+		e.staleRates[n-1].days++
+		return
+	}
+	e.staleRates = append(e.staleRates, staleRun{asOf: asOf, rate: rate, first: day, last: day, days: 1})
+}
+
 // reinvestDividends buys more shares with every dividend paid on day k:
 // shares × Bar.Dividend is spent at that day's close, before the day's
 // contribution, so shares bought that day earn nothing — which is how an
-// ex-dividend date works. Buying at Close keeps the share count real,
-// unlike valuing with Bar.AdjClose, which is back-adjusted by dividends
-// paid after the range and so does not count shares anyone holds.
+// ex-dividend date works. Buying at Close keeps the count a count of
+// shares (in today's split units; holdings converts it back across later
+// splits), unlike valuing with Bar.AdjClose, which is back-adjusted by
+// dividends paid after the range and so does not count shares anyone
+// holds. A dividend carried from a day missing from the calendar (see
+// alignBars) is reinvested at the close of the day it is carried to.
 func (e *engine) reinvestDividends(k int) {
 	for i := range e.plan.Allocations {
 		b := e.cal.bars[i][k]
@@ -129,27 +153,30 @@ func (e *engine) nav(k int, rate float64) float64 {
 	return e.totalValue(k, rate) / e.units
 }
 
-// contribute invests one contribution on day k. The fees (the rate on the
-// gross amount plus the fixed commission) come off first, the net
-// remainder is converted to USD at rate and split by weight, and each
-// symbol's share count grows by its slice divided by that day's close.
+// contribute invests one contribution on day k. The contribution is one
+// order per allocation, each of its weight of the gross amount, and each
+// order pays its own fees: FeeRate of the order plus the whole FeeFixed,
+// because brokers charge the fixed commission per trade. What is left of
+// each order is converted to USD at rate and buys that symbol at day k's
+// close.
 func (e *engine) contribute(k int, day time.Time, rate, nav float64) {
 	gross := e.plan.Amount
-	fee := gross*e.plan.FeeRate + e.plan.FeeFixed
+	fee := gross*e.plan.FeeRate + e.plan.FeeFixed*float64(len(e.plan.Allocations))
 	net := gross - fee
-	netUSD := net / rate
 
 	e.contributions++
 	e.invested += gross
 	e.fees += fee
 	e.netInvested += net
-	e.netUSD += netUSD
+	e.netUSD += net / rate
 	e.units += net / nav
 	e.flows = append(e.flows, CashFlow{Date: day, Amount: -gross})
 
 	for i, a := range e.plan.Allocations {
-		e.shares[i] += netUSD * a.Weight / e.cal.bars[i][k].Close
-		e.investedBy[i] += gross * a.Weight
+		order := gross * a.Weight
+		orderNet := order*(1-e.plan.FeeRate) - e.plan.FeeFixed
+		e.shares[i] += orderNet / rate / e.cal.bars[i][k].Close
+		e.investedBy[i] += order
 	}
 }
 
@@ -181,9 +208,9 @@ func (e *engine) result() *Result {
 		Profit:         e.value - e.invested,
 		MaxDrawdownPct: MaxDrawdown(e.navs) * 100,
 		CashDividends:  e.cash,
-		Holdings:       e.holdings(last),
 		Timeline:       e.timeline,
 	}
+	res.Holdings, res.Notes = e.holdings(last)
 	if e.invested > 0 {
 		res.ReturnPct = res.Profit / e.invested * 100
 	}
@@ -200,6 +227,9 @@ func (e *engine) result() *Result {
 	if e.fx.enabled() {
 		res.FX = e.fxSummary(last)
 	}
+	for _, r := range e.staleRates {
+		res.Notes = append(res.Notes, r.note())
+	}
 	return res
 }
 
@@ -208,14 +238,24 @@ func (e *engine) result() *Result {
 const annualizedUnavailableNote = "annualized return not computed: the range is too short to annualise or no rate between -99.99% and +1000% per year fits the cash flows"
 
 // holdings reports the final position per symbol, valued at day k's close
-// and the last exchange rate.
-func (e *engine) holdings(k int) []Holding {
+// and the last exchange rate, and a note for every symbol whose share
+// count was converted back across a later split.
+//
+// The engine counts shares in the units of the split-adjusted prices it
+// is given, which are today's units. A split after day k had not happened
+// on day k, so the shares actually held then are the engine's count
+// divided by the ratio of every split after day k. The value is the same
+// either way.
+func (e *engine) holdings(k int) ([]Holding, []string) {
+	end := e.cal.days[k]
 	out := make([]Holding, len(e.plan.Allocations))
+	var notes []string
 	for i, a := range e.plan.Allocations {
 		value := e.shares[i] * e.cal.bars[i][k].Close * e.lastRate
+		ratio, later := splitsAfter(e.cal.splits[i], end)
 		h := Holding{
 			Symbol:   a.Symbol,
-			Shares:   e.shares[i],
+			Shares:   e.shares[i] / ratio,
 			Invested: e.investedBy[i],
 			Value:    value,
 		}
@@ -223,8 +263,38 @@ func (e *engine) holdings(k int) []Holding {
 			h.Weight = value / e.value
 		}
 		out[i] = h
+		if len(later) > 0 {
+			notes = append(notes, fmt.Sprintf("%s holds %.4f shares on %s, before the %s; that is %.4f shares in today's split-adjusted prices",
+				a.Symbol, h.Shares, formatDate(end), describeSplits(later), e.shares[i]))
+		}
 	}
-	return out
+	return out, notes
+}
+
+// splitsAfter returns the combined ratio of the splits dated after end
+// (1 when there are none) and those splits. Splits with a non-positive
+// ratio are ignored.
+func splitsAfter(splits []market.Split, end time.Time) (float64, []market.Split) {
+	ratio := 1.0
+	var later []market.Split
+	for _, s := range splits {
+		if !market.Day(s.Date).After(end) || s.Numerator <= 0 || s.Denominator <= 0 {
+			continue
+		}
+		ratio *= s.Numerator / s.Denominator
+		later = append(later, s)
+	}
+	return ratio, later
+}
+
+// describeSplits renders splits as "3:1 split on 2024-10-11 and 2:1
+// split on ...".
+func describeSplits(splits []market.Split) string {
+	parts := make([]string, len(splits))
+	for i, s := range splits {
+		parts[i] = fmt.Sprintf("%s split on %s", s.Ratio(), formatDate(market.Day(s.Date)))
+	}
+	return strings.Join(parts, " and ")
 }
 
 // fxSummary explains the exchange-rate contribution to a KRW result. The
